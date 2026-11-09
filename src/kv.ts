@@ -52,6 +52,10 @@ export const KV = {
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
    */
+  /** Cron Source: whether a job already fired for a day (`fired`), and the last loop round it opened (`round`). */
+  cron: { fired: family<boolean, [job: string, day: string]>('cron-fired:'), round: family<number, [job: string, day: string]>('cron-round:') },
+  /** Local Source: the content hash already seen for one task file, so an unchanged file is not re-ingested. */
+  local: { seen: family<{ hash: string }, [file: string]>('local-seen:') },
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },

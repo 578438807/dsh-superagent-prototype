@@ -746,6 +746,9 @@ const TEXT = {
   'healthCode.feishuCliUnset': ['来源已打开，还没有设置机器人的 lark-cli', HEALTH_TEXT.feishuCliUnset],
   'healthCode.feishuBotMissing': ['等待飞书机器人', HEALTH_TEXT.feishuBotMissing],
   'healthCode.pollFailures': ['连续 {count} 次轮询失败，最近一次：{error}', HEALTH_TEXT.pollFailures],
+  'healthCode.skipHoliday': ['非交易日（{day}），无需处理', HEALTH_TEXT.skipHoliday],
+  'healthCode.dup': ['{day} 已触发过', HEALTH_TEXT.dup],
+  'healthCode.badCron': ['不可用的 cron 表达式：{cron}', HEALTH_TEXT.badCron],
 } as const satisfies Record<string, readonly [string, string]>
 export type DshSuperagentKey = keyof typeof TEXT
 const language = (index: 0 | 1) => Object.fromEntries(Object.entries(TEXT).map(([key, pair]) => [key, pair[index]])) as Record<DshSuperagentKey, string>

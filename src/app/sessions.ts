@@ -146,6 +146,9 @@ export class Sessions {
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
+    // An archived Session rejects every step the loop proposes (ArchivedSessionGate), so a cron wake-up, subagent settlement,
+    // or queued follow-up would end as `blocked` with no model request. Unarchive here so every wake-up of this Session works.
+    if (ctx.workspaceRegistry.archivedSessionIds.includes(id as SessionId)) await ctx.workspaceRegistry.unarchiveSession(id as SessionId)
     const settings = this.host.store.settings()
     await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
     await this.decorate(result.agent)
@@ -245,7 +248,9 @@ export class Sessions {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      const ruleId = current?.mandate.basis.rules?.[0]
+      const rule = ruleId ? host.store.settings().policy.rules.find(item => item.id === ruleId) : undefined
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate, rule) : ''}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -260,7 +265,9 @@ export class Sessions {
     const register = this.registerTool(agent, binding)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
+      // Keep only the tools this DSH registers: a profile without `bash` (Windows, pwsh only) would otherwise make restrict throw.
+      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill']
+        .filter(name => agent.ctx.tools.get(name)) }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.

@@ -84,8 +84,10 @@ export class Runtime extends Service implements SourceHost {
   private readonly toolHost: MainToolsHost & ExecutorToolsHost
   /** Non-zero while a main-Session tool is executing an Engine command, suppressing self-triggered domain event notices. */
   private quiet = 0
+  private readonly restartFn: () => void
   constructor(ctx: Context, readonly machine: Machine, restart: () => void) {
     super(ctx, 'orchestrator')
+    this.restartFn = restart
     const runtime = this
     // Lock the state directory before opening the database so another process cannot migrate or write concurrently.
     mkdirSync(machine.stateDir, { recursive: true, mode: 0o700 })
@@ -223,7 +225,7 @@ export class Runtime extends Service implements SourceHost {
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
-      checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
+      checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog(), restart: () => runtime.restartFn() }
   }
   /** Idempotent stop; concurrent or repeated calls share the same shutdown promise. */
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }

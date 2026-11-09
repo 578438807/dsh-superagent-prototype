@@ -51,6 +51,8 @@ export interface HttpHost {
   links(): LinkTarget
   ticketEnvironment(ticket: Ticket): Variable[]
   checkSetup(): void
+  /** Restarts the plugin runtime so a config change takes effect. */
+  restart(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
 }
@@ -203,6 +205,7 @@ function routes(runtime: HttpHost): Routes {
     'GET policy/history': () => policyHistory(store, runtime.sources, policyVersion(store.settings())),
     'POST policy-sync/:id': async ({ params }) => ({ policy: await runtime.settings.sync(params.id) }),
     'POST setup/check': () => { runtime.checkSetup(); return { restarting: true } },
+    'POST runtime/restart': () => { runtime.restart(); return { restarting: true } },
     'GET models': () => runtime.models(),
     'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
     'PUT prompts': async input => {

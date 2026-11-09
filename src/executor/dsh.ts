@@ -9,7 +9,7 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
-import type { Settings } from '../policy.ts'
+import type { Rule, Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
@@ -29,7 +29,7 @@ const PREPARE_TIMEOUT_MS = 10 * 60_000
 /** Maximum transient retry attempts for a launch or worker turn, and the initial backoff before resuming a turn. */
 const TRANSIENT_TRIES = 3, TRANSIENT_BACKOFF_MS = 15_000
 /** How long a worker's background work may run on after its turn ended before it is stopped and the worker reported waiting. */
-const BACKGROUND_LIMIT_MS = 30 * 60_000
+const BACKGROUND_LIMIT_MS = 90 * 60_000
 /** How long a host stop waits for the workers' background work to stop. */
 const SHUTDOWN_STOP_MS = 10_000
 /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
@@ -88,10 +88,35 @@ export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: 
  * Returns additional system-prompt mandate instructions for a worker beyond the request: for work accepted proactively under
  * rules (`strength === 'inferred'`), restricts authorization to small internal changes within the rule scope; returns `''` for explicit requests.
  */
-export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string {
-  return mandate.strength === 'inferred' ? 'This ticket has limited proactive authorization. Independently verify that it is a small change '
+/** Renders a rule's objective, acceptance criteria, red lines and budget as contract text for the worker prompt. */
+export function ruleTerms(rule: Rule): string {
+  const NL = '\n'
+  const lines: string[] = []
+  if (rule.objective) lines.push(`objective: ${rule.objective}`)
+  const hard = rule.acceptance?.hard ?? []
+  const soft = rule.acceptance?.soft ?? []
+  if (hard.length) lines.push('must pass (checked by the host, not by you):' + NL + hard.map((x, i) => `${i + 1}. ${x}`).join(NL))
+  if (soft.length) lines.push('judged by an independent reviewer:' + NL + soft.map((x, i) => `${i + 1}. ${x}`).join(NL))
+  if (rule.redLines?.length) lines.push('red lines, never cross:' + NL + rule.redLines.map((x, i) => `${i + 1}. ${x}`).join(NL))
+  if (rule.budget?.minutes !== undefined) lines.push(`budget: about ${rule.budget.minutes} minutes, up to ${rule.budget.maxExtensions ?? 0} extension request(s)`)
+  if (rule.autonomy) lines.push(`autonomy: ${rule.autonomy}`)
+  return lines.join(NL)
+}
+/**
+ * Returns additional system-prompt mandate instructions for a worker beyond the request. For work accepted proactively under
+ * rules (`strength === 'inferred'`) with a rule contract, authorization is the rule objective plus its red lines: stay inside it,
+ * and only stop when a red line would be crossed or a public interface / product decision must change. Without a rule contract,
+ * restricts authorization to small internal changes within the rule scope. Returns `''` for explicit requests.
+ */
+export function mandateInstructions(mandate: Pick<Mandate, 'strength'>, rule?: Rule): string {
+  if (mandate.strength !== 'inferred') return ''
+  const terms = rule ? ruleTerms(rule) : ''
+  if (rule && rule.objective) return 'Your authorization is that rule objective plus its red lines; stay inside them. '
+    + 'The ticket objective and acceptance criteria define done — the listed steps are a reference, not a required order. '
+    + 'If a red line would be crossed, or a public interface or product decision must change, say so in a blocked report.' + (terms ? '\n\n' + terms : '')
+  return 'This ticket has limited proactive authorization. Independently verify that it is a small change '
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
-    + 'decisions or clarification, stop and report dropped; do not expand scope.' : ''
+    + 'decisions or clarification, stop and report dropped; do not expand scope.'
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
@@ -251,7 +276,10 @@ export class DshExecutor implements Executor {
     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
     const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
-    if (command) await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)
+    // A Windows deployment has no `sh`: the prepare command is a batch/command string, so run it through cmd.exe.
+    // Running it through a POSIX shell there also eats the backslashes of every Windows path in it.
+    const shell = process.platform === 'win32' ? ['cmd.exe', '/d', '/s', '/c'] : ['sh', '-c']
+    if (command) await runAsWorker(this.host.context.subprocess, [...shell, command], dirname(directory), signal, env)
       .catch(async (error: unknown) => {
         // Remove an empty directory left by a failed prepare command so a later retry does not treat it as already prepared.
         await rmdir(directory).catch(() => { /* Absent, or holding what the command wrote, which the output explains. */ })
