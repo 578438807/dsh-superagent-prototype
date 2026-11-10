@@ -1,5 +1,6 @@
 /** Cron Source: turns a five-field schedule into one Trigger per fire, so recurring work needs no external scheduler. */
 import type { Context } from '@deepseek-ai/cordis'
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { key } from '../core/index.ts'
@@ -29,6 +30,8 @@ const JobSchema = z.object({
   onlyTradingDays: z.union([z.boolean(), z.enum(['true', 'false'])]).default(true).transform(value => value === true || value === 'true'),
   loop: z.boolean().optional(),
   window: LoopWindowSchema.optional(),
+  /** Repo-relative product paths (`,`/`;`/newline separated) whose content decides whether a completed loop round added anything. */
+  products: z.string().trim().max(2000).optional(),
 }).strict()
 export type CronJob = z.infer<typeof JobSchema>
 
@@ -45,13 +48,14 @@ export const cronKind: SourceKind<CronConfig> = {
   schema: CronConfigSchema,
   fields: [
     { key: 'jobs', type: 'rows', label: { zh: '定时任务', en: 'Jobs' },
-      hint: { zh: '每行一个任务：标识、五段 cron（分 时 日 月 周，支持 *、a-b、a,b、*/n）、显示名、是否只在交易日触发。同一天同一个任务只产生一次 Trigger。', en: 'One job per row: name, five-field cron (minute hour day month weekday; supports *, a-b, a,b and */n), display title, trading-day check. One Trigger per job per day.' },
+      hint: { zh: '每行一个任务：标识、五段 cron（分 时 日 月 周，支持 *、a-b、a,b、*/n）、显示名、是否只在交易日触发、产物路径（逗号分隔，留空则不按产物判空转）。同一天同一个任务只产生一次 Trigger。', en: 'One job per row: name, five-field cron (minute hour day month weekday; supports *, a-b, a,b and */n), display title, trading-day check, and product paths whose content decides whether a loop round added anything. One Trigger per job per day.' },
       columns: [
         { key: 'job', type: 'text', label: { zh: '任务标识', en: 'Job name' } },
         { key: 'cron', type: 'text', label: { zh: 'cron 表达式', en: 'Cron expression' } },
         { key: 'title', type: 'text', optional: true, label: { zh: '显示名', en: 'Display title' } },
         { key: 'onlyTradingDays', type: 'select', label: { zh: '只在交易日', en: 'Trading days only' },
           options: [{ value: 'true', label: { zh: '是', en: 'Yes' } }, { value: 'false', label: { zh: '否', en: 'No' } }] },
+        { key: 'products', type: 'text', optional: true, label: { zh: '产物指纹', en: 'Product paths' } },
       ] },
     { key: 'repo', type: 'text', advanced: true, label: { zh: '交易日历所在目录', en: 'Repository holding the trading calendar' },
       hint: { zh: '读取该目录下 .cache/trade_days_baostock.json；读不到时按周一至周五判断。', en: 'Reads .cache/trade_days_baostock.json under this directory; falls back to Monday-Friday when unreadable.' } },
@@ -186,8 +190,13 @@ function renderText(job: CronJob, day: string): string {
 }
 
 function renderLoopText(job: CronJob, day: string, round: number): string {
+  const products = (job.products ?? '').trim()
+  const idle = products
+    ? `本轮若没有让产物内容产生真实增量（${products} 去时间戳后与上轮相同），orchestrator_report 必须带 no_new_work:true，宿主据此结束本窗口。`
+    : '本轮若没有产生真实增量，orchestrator_report 必须带 no_new_work:true，宿主据此结束本窗口。'
   return `【${job.title || job.job}】${day} 第 ${round} 轮，窗口内循环请处理。job=${job.job} round=${round}
-动手前先把计划写到 outputs/plans/<ticketId>.json（ticket/round/why_now/plan[{step,class}]/expected_output/eta_minutes），class 取 read/own-output/data-refresh/script-edit/policy-edit/delete/external-write/caliber 之一；caliber 只指「切换生产主口径」这一件事，复核/校验/断言/对比口径一律算 read 或 own-output，标成 caliber 会让整票被宿主判失败；同时在 outputs/state/<ruleId>.json 维护状态板（standing objective / facts 带日期与证据 / open threads / ruled out / last round）。先写计划再动手，转向要在报告里说明理由。`
+动手前先把计划写到 outputs/plans/<ticketId>.json（ticket/round/why_now/plan[{step,class}]/expected_output/eta_minutes），class 取 read/own-output/data-refresh/script-edit/policy-edit/delete/external-write/caliber 之一；caliber 只指「切换生产主口径」这一件事，复核/校验/断言/对比口径一律算 read 或 own-output，标成 caliber 会让整票被宿主判失败；同时在 outputs/state/<ruleId>.json 维护状态板（standing objective / facts 带日期与证据 / open threads / ruled out / last round）。先写计划再动手，转向要在报告里说明理由。
+${idle}`
 }
 
 const wallMinutes = (at: Date) => {
@@ -240,6 +249,76 @@ function lastRoundIdle(ctx: SourceContext, job: string, day: string, last: numbe
   const ticket = ctx.tickets.get(ticketId)
   const report = ticket?.assignments[ticket.assignments.length - 1]?.report
   return report?.no_new_work === true
+}
+
+/**
+ * The last round's own report state, or undefined when it produced no ticket: an ignored or unavailable round dispatched
+ * no work, so its repeat is already governed by `ignoreBackoff` rather than by the products.
+ */
+function lastRoundState(ctx: SourceContext, job: string, day: string, last: number): string | undefined {
+  const decisions = ctx.decisions.byThread(`${SOURCE}:${job}:${day}:${last}`)
+  const ticketId = decisions[decisions.length - 1]?.ticketId
+  if (ticketId === undefined) return undefined
+  const ticket = ctx.tickets.get(ticketId)
+  return ticket?.assignments[ticket.assignments.length - 1]?.report?.state
+}
+
+/** A timestamp key, whatever its prefix: `built_at`, `generated_at`, `source_discovered_built_at`, `at`, and so on. */
+const VOLATILE_KEY = /^(?:.*_)?at$|^ts$/
+
+/** A value with its timestamp keys removed, so two rounds that wrote the same findings hash the same. */
+export function stampFree(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stampFree)
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const name of Object.keys(value as Record<string, unknown>).sort()) {
+      if (!VOLATILE_KEY.test(name)) out[name] = stampFree((value as Record<string, unknown>)[name])
+    }
+    return out
+  }
+  return value
+}
+
+/**
+ * Content fingerprint of a job's declared products, or undefined when none is declared. JSON products are compared with
+ * their timestamp keys removed, so a rebuild that found nothing new keeps the same fingerprint; any other file is hashed
+ * as bytes, and a missing one contributes a fixed marker rather than dropping out of the comparison.
+ */
+export async function productsFingerprint(repo: string, job: CronJob): Promise<string | undefined> {
+  const paths = (job.products ?? '').split(/[,;\n]/).map(path => path.trim()).filter(path => path.length > 0)
+  if (!paths.length) return undefined
+  const hash = createHash('sha256')
+  for (const path of paths) {
+    let text: string | undefined
+    try { text = await readFile(join(repo, path), 'utf8') } catch { text = undefined }
+    if (text === undefined) { hash.update(`${path}\u0000missing\u0000`); continue }
+    let body = text
+    if (path.endsWith('.json')) {
+      try { body = JSON.stringify(stampFree(JSON.parse(text))) } catch { /* Unparseable JSON is compared as text. */ }
+    }
+    hash.update(`${path}\u0000${body}\u0000`)
+  }
+  return hash.digest('hex')
+}
+
+/**
+ * The host's own verdict on whether the last completed round added anything, read from the products rather than from what
+ * the worker chose to report: a worker that finished cleanly but found nothing new cannot keep the window asking for it.
+ * A round records the fingerprint it starts from as it opens, so the products are hashed once per round and the verdict is
+ * settled the first time the round is seen finished. `idle` stays false while the job declares no products.
+ */
+export async function productsIdle(ctx: SourceContext, repo: string, job: CronJob, day: string, last: number): Promise<boolean> {
+  if (!job.products?.trim()) return false
+  // Only a round that finished cleanly is judged here: a failed or blocked round is handled by `failureStreak`, and an
+  // ignored or unavailable one never dispatched anything, so its products say nothing about the job.
+  if (lastRoundState(ctx, job.job, day, last) !== 'ready') return false
+  const record = ctx.state.get(KV.cron.product(job.job, day, last))
+  if (record?.judged !== undefined) return record.judged === 'idle'
+  const current = await productsFingerprint(repo, job)
+  if (current === undefined || record === undefined) return false
+  const idle = current === record.fingerprint
+  ctx.state.set(KV.cron.product(job.job, day, last), { fingerprint: record.fingerprint, judged: idle ? 'idle' : 'progress' })
+  return idle
 }
 
 /**
@@ -324,6 +403,9 @@ export async function loopStep(ctx: SourceContext, repo: string, job: CronJob, a
   // A round's trigger reaches a ticket about a minute later; without this the next round fires before that verdict exists.
   if (last > 0 && roundPending(ctx, job.job, day, last)) return
   if (last > 0 && lastRoundIdle(ctx, job.job, day, last)) return
+  // The host's own verdict, from the products themselves: a round that finished cleanly but wrote nothing new ends the
+  // window just as an explicit `no_new_work` does, so repetition does not depend on a worker remembering to say so.
+  if (last > 0 && (await productsIdle(ctx, repo, job, day, last))) return
   if (last > 0 && failureStreak(ctx, job.job, day, last) >= 2) return
   const backoff = ignoreBackoff(ctx, job.job, day, last)
   if (backoff !== undefined && at.getTime() - new Date(backoff.since).getTime() < backoff.wait) return
@@ -331,6 +413,10 @@ export async function loopStep(ctx: SourceContext, repo: string, job: CronJob, a
   if (previous && at.getTime() - new Date(previous.at).getTime() < ROUND_FLOOR_MS) return
   const round = last + 1
   if (ctx.triggers.get(key('loop', job.job, day, String(round))) !== undefined) return
+  // The baseline this round starts from, recorded before the round opens so a later tick can tell whether it changed any
+  // of the job's products without racing the worker's own writes.
+  const baseline = await productsFingerprint(repo, job)
+  if (baseline !== undefined) ctx.state.set(KV.cron.product(job.job, day, round), { fingerprint: baseline })
   await fire(ctx, repo, job, at, round)
 }
 

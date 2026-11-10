@@ -1,5 +1,8 @@
 import { expect, it } from 'vitest'
-import { fire, localDate, nextDue, nextFire, tradeDay } from '../src/sources/cron.ts'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fire, localDate, nextDue, nextFire, productsFingerprint, productsIdle, stampFree, tradeDay } from '../src/sources/cron.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 
 const iso = (at: Date | null) => at?.toISOString()
@@ -103,4 +106,69 @@ it('leaves the day open when the trigger is a duplicate or filtered', async () =
     expect(h.describes).toEqual([])
     expect(h.reports.at(-1)?.health).toMatchObject({ state: 'ready', code: 'dup' })
   }
+})
+
+// The host must be able to see for itself that a completed round added nothing: a worker dropping `no_new_work` must not
+// turn every round into another full pass over the same sources.
+it('drops timestamp keys so a rebuild with the same findings hashes the same', () => {
+  const before = { hypotheses: [{ id: 'LH-1', calmar: 1.2 }], generated_at: '2026-11-07T07:00:00+08:00', source_discovered_built_at: 'a' }
+  const after = { hypotheses: [{ id: 'LH-1', calmar: 1.2 }], generated_at: '2026-11-07T15:00:00+08:00', source_discovered_built_at: 'b' }
+  expect(stampFree(before)).toEqual(stampFree(after))
+  expect(stampFree({ ...before, hypotheses: [{ id: 'LH-1', calmar: 1.9 }] })).not.toEqual(stampFree(before))
+  // A key that merely ends in "at" stays a finding: only timestamp keys are dropped.
+  expect(stampFree({ format: 'x', at: 1 })).toEqual({ format: 'x' })
+})
+
+const loopJob = (products: string) => ({ job: 'daily-learn', cron: '0 20 * * 1-5', title: '', onlyTradingDays: false, products })
+
+it('fingerprints the declared products, ignoring timestamps and retaining a missing one', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'cron-products-'))
+  try {
+    const products = 'hypotheses.json,gone.json'
+    await writeFile(join(repo, 'hypotheses.json'), JSON.stringify({ hypotheses: [{ id: 'LH-1' }], generated_at: 'r1' }))
+    const first = await productsFingerprint(repo, loopJob(products))
+    expect(first).toBeTypeOf('string')
+    // Only the rebuild timestamp moved, so the round added nothing and the fingerprint must not move.
+    await writeFile(join(repo, 'hypotheses.json'), JSON.stringify({ hypotheses: [{ id: 'LH-1' }], generated_at: 'r2' }))
+    expect(await productsFingerprint(repo, loopJob(products))).toBe(first)
+    // A real finding moves it, and so does a product that starts existing.
+    await writeFile(join(repo, 'hypotheses.json'), JSON.stringify({ hypotheses: [{ id: 'LH-2' }], generated_at: 'r3' }))
+    const found = await productsFingerprint(repo, loopJob(products))
+    expect(found).not.toBe(first)
+    await writeFile(join(repo, 'gone.json'), '{}')
+    expect(await productsFingerprint(repo, loopJob(products))).not.toBe(found)
+    expect(await productsFingerprint(repo, loopJob(''))).toBeUndefined()
+  } finally { await rm(repo, { recursive: true, force: true }) }
+})
+
+it('judges a finished round idle only when its products are unchanged', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'cron-idle-'))
+  try {
+    // One seam drives the verdict: the last decision on the round's thread, and the ticket it opened.
+    const thread = (round: number) => `cron:daily-learn:2026-11-09:${round}`
+    let opened = 1
+    const records = new Map<string, unknown>()
+    const ctx = {
+      state: { get: (k: string) => records.get(k), set: (k: string, v: unknown) => { records.set(k, v) }, keys: () => [] },
+      decisions: { byThread: (k: string) => k === thread(opened) ? [{ ticketId: 't1' }] : [] },
+      tickets: { get: () => ({ ended: undefined, assignments: [{ report: { state: 'ready' } }] }) },
+    } as unknown as SourceContext
+    const job = loopJob('hypotheses.json')
+    const open = async (round: number) => {
+      opened = round
+      records.set(`cron-product:daily-learn:2026-11-09:${round}`, { fingerprint: await productsFingerprint(repo, job) })
+    }
+    await writeFile(join(repo, 'hypotheses.json'), JSON.stringify({ hypotheses: [{ id: 'LH-1' }], generated_at: 'r1' }))
+    await open(1)
+    // Rebuilt with the same findings: the window stops asking even though the worker never said so.
+    await writeFile(join(repo, 'hypotheses.json'), JSON.stringify({ hypotheses: [{ id: 'LH-1' }], generated_at: 'r2' }))
+    expect(await productsIdle(ctx, repo, job, '2026-11-09', 1)).toBe(true)
+    // A round that wrote a new finding is progress.
+    await open(2)
+    await writeFile(join(repo, 'hypotheses.json'), JSON.stringify({ hypotheses: [{ id: 'LH-2' }], generated_at: 'r3' }))
+    expect(await productsIdle(ctx, repo, job, '2026-11-09', 2)).toBe(false)
+    // A round with no recorded baseline, or a job with no products, is not judged here.
+    expect(await productsIdle(ctx, repo, job, '2026-11-09', 9)).toBe(false)
+    expect(await productsIdle(ctx, repo, loopJob(''), '2026-11-09', 2)).toBe(false)
+  } finally { await rm(repo, { recursive: true, force: true }) }
 })
