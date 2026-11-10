@@ -19,6 +19,8 @@ export interface WorkerReport {
   answers?: string
   /** A progress report asking the host for one more assignment; the host grants it only within the rule's extension budget. */
   need_more?: boolean
+  /** A ready report whose round found nothing new to do, so a cron loop window stops asking until the next one. */
+  no_new_work?: boolean
 }
 const RECOVERY_NOTE = 'The host restarted during this ticket. Inspect the current worktree, git history and GitHub state before continuing. Do not repeat an already completed external operation. Finish the original assignment and report its status.'
 const EXTENSION_NOTE = 'The host granted this ticket one more assignment because your last progress report asked for it. Continue from where you stopped, do not repeat finished steps, and report the result again when done.'
@@ -122,7 +124,7 @@ export class Assignments extends EnginePart {
     else delete ticket.attention
     // A replaced or cleared attention question withdraws any pending unsent reply for the previous question from the outbox.
     if (previous && previous.id !== attention?.id) this.replies.withdrawAttention(previous.id)
-    assignment.report = { state: report.state, summary: report.summary, at }
+    assignment.report = { state: report.state, summary: report.summary, at, ...(report.no_new_work ? { no_new_work: true as const } : {}) }
     ticket.updatedAt = at
     // A worker that reports progress with need_more asks for another assignment; the Executor tool already checked the rule budget.
     if (report.state === 'progress' && report.need_more) {

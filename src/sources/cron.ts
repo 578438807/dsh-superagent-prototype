@@ -286,7 +286,9 @@ function ignoreBackoff(ctx: SourceContext, job: string, day: string, last: numbe
   for (let round = last; round > 0 && count < 8; round -= 1) {
     const decisions = ctx.decisions.byThread(`${SOURCE}:${job}:${day}:${round}`)
     const decision = decisions[decisions.length - 1]
-    if (decision === undefined || decision.kind !== 'ignore') break
+    // An `unavailable` decision is a timed-out assessment: the round was never judged, so the next one would only
+    // queue another unassessed round. Backing off exactly like an explicit ignore keeps a busy window from spinning.
+    if (decision === undefined || (decision.kind !== 'ignore' && decision.kind !== 'unavailable')) break
     if (since === undefined) since = decision.at
     count += 1
   }

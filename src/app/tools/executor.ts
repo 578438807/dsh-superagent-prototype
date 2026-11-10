@@ -96,6 +96,7 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         pr_number: z.number().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
         reply_to_trigger_id: z.string().optional().describe('The explicit human question this report answers; never for ordinary progress.'),
         need_more: z.boolean().optional().describe('With state=progress: ask the host for one more assignment when the rule budget allows it; the host decides.'),
+        no_new_work: z.boolean().optional().describe('With state=ready: this round found nothing new to do, so a cron loop window stops asking this job until the next window.'),
       }).strict(),
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
@@ -156,7 +157,8 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
           if (refused) throw new Error(refused)
           const report = { state, summary, ...(args.human_action !== undefined ? { question: args.human_action } : {}),
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),
-            ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}), ...(needMore ? { need_more: true } : {}) }
+            ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}), ...(needMore ? { need_more: true } : {}),
+            ...(args.no_new_work ? { no_new_work: true } : {}) }
           const updated = host.engine.report(ticketId, report)
           const relay = reportRelay(updated, report)
           if (relay) host.sessions.relay(relay.id, relay.text)
