@@ -113,6 +113,53 @@ export async function checkHard(commands: Commands, rule: Rule, cwd: string, sig
   return { passed: reasons.length === 0 && invalid.length === 0, reasons, invalid }
 }
 
+/** One action a plan declares: what it does and which approval class it belongs to. */
+interface PlannedAction { step?: string; class?: string }
+interface Plan { plan?: PlannedAction[] }
+interface Approval { ticket?: string; class?: string }
+
+/** Parse one JSON line, or undefined when the line is not JSON. */
+function parseLine(text: string): unknown {
+  try { return JSON.parse(text) } catch { return undefined }
+}
+
+/** Read a text artifact the soft reviewer may judge against, or '' when it is absent or unreadable. */
+function readEvidence(path: string): string {
+  try { return readFileSync(path, 'utf8').slice(0, 12000) } catch { return '' }
+}
+
+/** Read one JSON file, or undefined when it is absent or unreadable. */
+function readJson(path: string): unknown {
+  try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return undefined }
+}
+
+/**
+ * Check a ticket's declared plan against its rule's approval classes. A class the rule never allows fails outright; a class
+ * that needs a person fails until `catalog/approvals.jsonl` holds that ticket's approval for it. No plan means nothing was
+ * declared, which the audit catches as an undeclared change rather than failing every report.
+ */
+export function checkApprovals(rule: Rule, cwd: string, ticketId: string): Verdict {
+  const reasons: string[] = []
+  const plan = readJson(absolute(`outputs/plans/${ticketId}.json`, cwd)) as Plan | undefined
+  const classes = new Set((plan?.plan ?? []).map(action => action.class).filter((name): name is string => Boolean(name)))
+  if (classes.size === 0) return { passed: true, reasons, invalid: [] }
+  const never = new Set(rule.approvals?.never ?? [])
+  const ask = new Set(rule.approvals?.ask ?? [])
+  const approved = new Set<string>()
+  const file = absolute('catalog/approvals.jsonl', cwd)
+  const log = existsSync(file) ? readFileSync(file, 'utf8').split('\n') : []
+  for (const line of log) {
+    if (!line.trim()) continue
+    const entry = parseLine(line) as Approval | undefined
+    if (entry?.ticket === ticketId && entry.class) approved.add(entry.class)
+  }
+  for (const name of classes) {
+    if (never.has(name)) reasons.push(`Approval denied: ${name} is never allowed for rule ${rule.id}.`)
+    else if (ask.has(name) && !approved.has(name)) reasons.push(`Approval missing: ${name}`)
+  }
+  return { passed: reasons.length === 0, reasons, invalid: [] }
+}
+
 /** The model route to review with: whatever the reporting worker Session was actually configured with. */
 export interface ReviewRoute {
   provider: string
@@ -135,16 +182,19 @@ export interface Reviewer {
  * Asks a model whether the report satisfies the rule's soft criteria. Returns `undefined` when there is nothing to
  * judge or no route to judge with, so the caller can fall back to the hard verdict instead of failing the ticket.
  */
-export async function reviewSoft(reviewer: Reviewer, route: ReviewRoute | undefined, rule: Rule, report: string, signal: AbortSignal): Promise<Verdict | undefined> {
+export async function reviewSoft(reviewer: Reviewer, route: ReviewRoute | undefined, rule: Rule, report: string, signal: AbortSignal, cwd?: string): Promise<Verdict | undefined> {
   const soft = rule.acceptance?.soft ?? []
   if (soft.length === 0) return undefined
   if (!route?.provider || !route.model) return undefined
+  const evidencePath = rule.acceptance?.evidence
+  const evidence = evidencePath && cwd ? readEvidence(absolute(evidencePath, cwd)) : ''
   const prompt = [
     `A work ticket for the rule "${rule.name}" reported:`,
     '',
     report.slice(0, 6000),
     '',
-    'Judge whether the report satisfies each subjective acceptance criterion below. Judge only from the report text; do not assume unstated work happened.',
+    ...(evidence ? [`The report's evidence file ${evidencePath}:`, '', evidence, ''] : []),
+    'Judge whether the report satisfies each subjective acceptance criterion below. Judge from the report text and its evidence file; do not assume unstated work happened.',
     ...soft.map((item, index) => `${index + 1}. ${item}`),
     '',
     'Answer with one JSON object and nothing else: {"pass": true|false, "reasons": ["..."]}',

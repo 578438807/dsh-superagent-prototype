@@ -1,4 +1,10 @@
 /** Application composition root and lifecycle manager for dsh-superagent. */
+/** Ten minutes between wake-ups: often enough to notice a stall, rare enough not to nag. */
+const HEARTBEAT_MS = 10 * 60_000
+/** The wake-up text: a check, not a job. */
+const HEARTBEAT_TEXT = 'Heartbeat: read outputs/failures for today, triage what is stuck, and update the state board. Do not open a ticket for this message.'
+/** Ten minutes before the window closes, ask for the daily summary even while tickets are still open. */
+const DAILY_SUMMARY_TEXT = 'Daily summary: the window closes soon. Write outputs/daily-summary/<yyyyMMdd>.md for today: one-line conclusion, what each post did, what was found, at most three decisions each with an A/B option and a default action, and the system state. Do not open a ticket for this message.'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -21,6 +27,8 @@ import type { Deployment, Machine } from '../deployment.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import type { SetupProblem } from '../setup.ts'
 import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
+import { minutesUntilClosed, schedulePaused } from '../schedule.ts'
+import { localDate } from '../sources/cron.ts'
 import { ticketCard } from './cards.ts'
 import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
@@ -84,6 +92,8 @@ export class Runtime extends Service implements SourceHost {
   private readonly toolHost: MainToolsHost & ExecutorToolsHost
   /** Non-zero while a main-Session tool is executing an Engine command, suppressing self-triggered domain event notices. */
   private quiet = 0
+  /** Wakes the main Session while the window is open so it keeps triaging even when no report arrives. */
+  private heartbeat?: ReturnType<typeof setInterval>
   private readonly restartFn: () => void
   constructor(ctx: Context, readonly machine: Machine, restart: () => void) {
     super(ctx, 'orchestrator')
@@ -161,7 +171,17 @@ export class Runtime extends Service implements SourceHost {
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
+      const llm = ctx.get('llm')
       this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
+        commands, stateDir: machine.stateDir,
+        // The soft reviewer judges a rule's acceptance on the host's side. Its route is whatever the deployment configured for
+        // background roles; with no route the soft criteria are skipped rather than silently passing.
+        reviewRoute: () => {
+          const model = store.settings().eval.model ?? store.settings().executor.model
+          if (!model) return undefined
+          return { provider: model.provider, model: model.model, ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}) }
+        },
+        reviewer: llm ? { stream: options => llm.stream(options as never) } : undefined,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
@@ -198,6 +218,25 @@ export class Runtime extends Service implements SourceHost {
   pump(): Promise<void> { return this.passes.pump() }
   sendReplies(): Promise<void> { return this.outbox.sent() }
   private closing(): boolean { return this.closingFlag }
+  /** Wakes the main Session only: a heartbeat never opens a ticket, it just asks the session to look again. */
+  private beat(): void {
+    if (this.closing() || this.paused()) return
+    this.summarize()
+    // Nothing open means the loop has gone quiet: that is the gap the heartbeat exists to fill.
+    if (this.store.tickets.open().length > 0) return
+    const slot = new Date().toISOString().slice(0, 16)
+    this.sessions.relay(`heartbeat:${slot}`, HEARTBEAT_TEXT)
+  }
+  /** Asks for today's summary once, in the last stretch of the window, whether or not tickets are open. */
+  private summarize(): void {
+    const at = new Date()
+    const day = localDate(at)
+    if (this.store.get(KV.runtime.dailySummary(day)) !== undefined) return
+    const left = minutesUntilClosed(this.store.settings().schedule, at)
+    if (left === null || left > HEARTBEAT_MS / 60_000) return
+    this.store.set(KV.runtime.dailySummary(day), at.toISOString())
+    this.sessions.relay(`daily-summary:${day}`, DAILY_SUMMARY_TEXT)
+  }
   /** Hold evaluation, dispatch, and outbound delivery while paused or awaiting setup; sources still record incoming triggers. */
   private paused(): boolean { return !this.setup.configured() || this.store.settings().paused }
   private async initialize(): Promise<void> {
@@ -216,6 +255,7 @@ export class Runtime extends Service implements SourceHost {
     this.executor.resume()
     this.passes.start()
     this.effects.start()
+    this.heartbeat = setInterval(() => { this.beat() }, HEARTBEAT_MS)
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }
   private httpHost(): HttpHost {
@@ -230,7 +270,8 @@ export class Runtime extends Service implements SourceHost {
   /** Idempotent stop; concurrent or repeated calls share the same shutdown promise. */
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }
   private async shutdown(): Promise<void> {
-    this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
+    this.closingFlag = true; if (this.heartbeat !== undefined) clearInterval(this.heartbeat)
+    const passes = this.passes.stop(); this.stopped.abort()
     try {
       this.assessor.stop()
       const ids = [this.masterId, ...this.store.tickets.list().map(ticket => workerSessionId(ticket.id))]

@@ -1,3 +1,8 @@
+## plan
+Before you touch anything, write your plan to outputs/plans/$DSH_SUPERAGENT_TICKET.json: {"ticket":"...","round":N,"why_now":"...","plan":[{"step":"...","class":"..."}],"expected_output":"...","eta_minutes":N}; each class is one of read, own-output, data-refresh, script-edit, policy-edit, delete, external-write, caliber.
+Running a script or refreshing data is data-refresh; script-edit changes a script's source; policy-edit changes .dsh settings; delete and external-write name what they touch. caliber means switching the production main caliber; checking or comparing one is read or own-output. Work outside that plan is undeclared and the audit fails it.
+Keep outputs/state/<rule id>.json current: standing objective, dated facts with evidence, open threads, ruled-out ideas, last round's plan and result; say why when you change direction.
+
 Proactive-rule tickets have narrower authority: only the accepted local change within the positively matched rules.
 Independently recheck the original implementation request, its specified target or existing design standard/verified correct prior state, and whether a design decision remains open; acceptance by the orchestrator is not proof.
 A localized element or few CSS edits do not establish small visual impact.

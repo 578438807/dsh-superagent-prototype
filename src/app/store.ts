@@ -23,6 +23,12 @@ export interface SettingsVersion {
   revision: number; savedAt: string; source: SettingsOrigin | 'internal'; block?: SettingsSave
   policyVersion: string; policyChanged: boolean; notified: string[]; settings: Settings
 }
+
+/** One host-side acceptance record for a rule's daily ticket: what the host checked and whether it passed. */
+export interface RuleRun {
+  ruleId: string; day: string; ticketId: string; minutes: number; retries: number
+  hardPassed: boolean; softPassed: boolean; overBudget: boolean
+}
 /**
  * Generated columns and partial indexes defining active working sets so passes scan only active rows.
  * Older databases missing a column get it added on open and populated by SQLite from stored JSON rows.
@@ -84,6 +90,10 @@ export class Store implements Repositories {
             CREATE INDEX IF NOT EXISTS trigger_thread_at ON trigger_thread(thread, at);
             CREATE INDEX IF NOT EXISTS decision_thread ON decision(thread);
             CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
+            CREATE TABLE IF NOT EXISTS rule_run (rule_id TEXT NOT NULL, day TEXT NOT NULL, ticket_id TEXT NOT NULL,
+              minutes REAL NOT NULL DEFAULT 0, retries INTEGER NOT NULL DEFAULT 0, hard_passed INTEGER NOT NULL DEFAULT 0,
+              soft_passed INTEGER NOT NULL DEFAULT 0, over_budget INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (rule_id, day));
+            CREATE INDEX IF NOT EXISTS rule_run_day ON rule_run(day);
           `)
           this.addColumns()
           if (migrating) migrateTo11(this)
@@ -244,6 +254,23 @@ export class Store implements Repositories {
     get: (id: string): Decision | undefined => { const row = this.db.prepare('SELECT value FROM decision WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Decision : undefined },
     save: (decision: Decision): void => { this.db.prepare('INSERT INTO decision VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value, thread=excluded.thread').run(decision.id, decision.threadKey, JSON.stringify(decision)) },
     byThread: (threadKeyValue: string): Decision[] => this.db.prepare('SELECT value FROM decision WHERE thread=? ORDER BY rowid').all(threadKeyValue).map(row => JSON.parse(String(row.value)) as Decision),
+  }
+  /** Host-side acceptance results per rule per day; the tuning view and the daily briefing read these. */
+  readonly ruleRuns = {
+    save: (run: RuleRun): void => {
+      this.db.prepare('INSERT INTO rule_run VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(rule_id, day) DO UPDATE SET ticket_id=excluded.ticket_id, minutes=excluded.minutes, retries=excluded.retries, hard_passed=excluded.hard_passed, soft_passed=excluded.soft_passed, over_budget=excluded.over_budget')
+        .run(run.ruleId, run.day, run.ticketId, run.minutes, run.retries, run.hardPassed ? 1 : 0, run.softPassed ? 1 : 0, run.overBudget ? 1 : 0)
+    },
+    /** Most recent days for one rule, newest first. */
+    recent: (ruleId: string, limit: number): RuleRun[] => this.db.prepare('SELECT rule_id, day, ticket_id, minutes, retries, hard_passed, soft_passed, over_budget FROM rule_run WHERE rule_id=? ORDER BY day DESC LIMIT ?').all(ruleId, limit).map(row => ({
+      ruleId: String(row.rule_id), day: String(row.day), ticketId: String(row.ticket_id), minutes: Number(row.minutes), retries: Number(row.retries),
+      hardPassed: Number(row.hard_passed) === 1, softPassed: Number(row.soft_passed) === 1, overBudget: Number(row.over_budget) === 1,
+    })),
+    /** Everything recorded for one calendar day, ordered by rule. */
+    byDay: (day: string): RuleRun[] => this.db.prepare('SELECT rule_id, day, ticket_id, minutes, retries, hard_passed, soft_passed, over_budget FROM rule_run WHERE day=? ORDER BY rule_id').all(day).map(row => ({
+      ruleId: String(row.rule_id), day: String(row.day), ticketId: String(row.ticket_id), minutes: Number(row.minutes), retries: Number(row.retries),
+      hardPassed: Number(row.hard_passed) === 1, softPassed: Number(row.soft_passed) === 1, overBudget: Number(row.over_budget) === 1,
+    })),
   }
   /** Read-only queries for management views, orchestrator tools, and source polling (see `storeReads`). */
   readonly read: ReturnType<typeof storeReads>

@@ -8,6 +8,7 @@ import { usePanel } from './provider.tsx'
 import { SETTINGS_GROUPS, settingsRoute, type SettingsGroup } from './route.ts'
 import { SettingsProvider } from './settings-kit.tsx'
 import { SourceSettings } from './source.tsx'
+import { TuningPage } from './tuning.tsx'
 
 const STAGE_GROUPS: readonly SettingsGroup[] = ['source', 'eval', 'execution']
 export function SettingsPage({ group, query, state, deploymentForm }: {
@@ -20,6 +21,7 @@ export function SettingsPage({ group, query, state, deploymentForm }: {
       case 'eval': return <SettingsProvider><EvalSettings version={query.version} /></SettingsProvider>
       case 'execution': return <SettingsProvider><ExecutionSettings /></SettingsProvider>
       case 'prompts': return <PromptsPage />
+      case 'tuning': return <TuningPage />
       case 'deployment': return <DeploymentPage setup={state.setup} form={deploymentForm} />
     }
   })()

@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { Setup } from '../src/app/setup.ts'
 import { SettingsSchema } from '../src/policy.ts'
+import { testMachine } from './fixtures/deployment.ts'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'local-mode-')) })
@@ -24,7 +25,7 @@ const settings = (localEnabled: boolean, github: { enabled: boolean; repository:
 
 const host = () => ({
   context: { logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() }, subprocess: {} } as unknown as Context,
-  machine: { stateDir: dir, promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 },
+  machine: testMachine({ stateDir: dir }),
   lifetime: new AbortController().signal,
   restart: vi.fn(),
 })

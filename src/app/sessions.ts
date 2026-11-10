@@ -266,7 +266,12 @@ export class Sessions {
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
       // Keep only the tools this DSH registers: a profile without `bash` (Windows, pwsh only) would otherwise make restrict throw.
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill']
+      // The main Session also keeps the context-management tools a context plugin registers globally (compress, decompress,
+      // search_context, acp_status, acp_cache, acp_read_original_image): without them billion-context sees no compress surface
+      // and suppresses every nudge, so the session grows past the window and never folds. Tools registered below are added
+      // after this restrict, so only the plugin-provided names that exist need listing here.
+      const contextTools = ['compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image']
+      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...contextTools]
         .filter(name => agent.ctx.tools.get(name)) }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
