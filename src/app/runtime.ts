@@ -235,7 +235,7 @@ export class Runtime extends Service implements SourceHost {
     const left = minutesUntilClosed(this.store.settings().schedule, at)
     if (left === null || left > HEARTBEAT_MS / 60_000) return
     this.store.set(KV.runtime.dailySummary(day), at.toISOString())
-    this.sessions.relay(`daily-summary:${day}`, DAILY_SUMMARY_TEXT)
+    this.sessions.relay(`daily-summary-${day}`, DAILY_SUMMARY_TEXT)
   }
   /** Hold evaluation, dispatch, and outbound delivery while paused or awaiting setup; sources still record incoming triggers. */
   private paused(): boolean { return !this.setup.configured() || this.store.settings().paused }
