@@ -60,9 +60,10 @@ export function briefingFor(host: LinkHost, primary: Trigger, settings: ReturnTy
   const runs = host.store.ruleRuns.recent(rule.id, 5)
   const last = runs[0]
   const recent = runs.length
-    ? runs.map(run => `${run.day}: hard ${run.hardPassed ? 'pass' : 'fail'}, soft ${run.softPassed ? 'pass' : 'fail'}${run.overBudget ? ', over budget' : ''}, ${run.minutes} min`).join('; ')
+    ? runs.map(run => `${run.day}: ${run.noNewWork ? 'no new work' : `hard ${run.hardPassed ? 'pass' : 'fail'}, soft ${run.softPassed ? 'pass' : 'fail'}`}${run.overBudget ? ', over budget' : ''}, ${run.minutes} min`).join('; ')
     : 'no recorded runs yet'
   const advice = !last ? 'First run under this rule: follow the objective and acceptance literally.'
+    : last.noNewWork ? 'Last run reported nothing new: check whether the job still has work before repeating it.'
     : !last.hardPassed ? 'Last run failed its hard checks: fix those before anything else.'
       : last.overBudget ? 'Last run went over its time budget: cut or parallelise the slow steps.'
         : 'Last run passed; keep the same shape and report anything that changed.'

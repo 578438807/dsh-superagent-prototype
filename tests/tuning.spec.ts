@@ -5,8 +5,8 @@ import type { RuleRun } from '../src/app/store.ts'
 
 const rule = (minutes: number | undefined, maxExtensions = 2): Rule => ({ id: 'r', name: 'Daily', enabled: true, instruction: 'i',
   ...(minutes === undefined ? {} : { budget: { minutes, maxExtensions } }) })
-const run = (minutes: number, over: Partial<Pick<RuleRun, 'overBudget' | 'hardPassed' | 'softPassed'>> = {}): RuleRun => ({
-  ruleId: 'r', day: '2026-11-04', ticketId: 't', minutes, retries: 0, hardPassed: true, softPassed: true, overBudget: false, ...over })
+const run = (minutes: number, over: Partial<Pick<RuleRun, 'overBudget' | 'hardPassed' | 'softPassed' | 'noNewWork'>> = {}): RuleRun => ({
+  ruleId: 'r', day: '2026-11-04', ticketId: 't', minutes, retries: 0, hardPassed: true, softPassed: true, overBudget: false, noNewWork: false, ...over })
 
 it('proposes nothing without a budget or with fewer than three runs', () => {
   expect(proposeFor(rule(undefined), [run(10), run(10), run(10)])).toBeUndefined()
@@ -33,4 +33,9 @@ it('clamps a raised budget to the upper bound', () => {
   const proposal = proposeFor(rule(470), [run(600, { overBudget: true }), run(600, { overBudget: true }), run(600, { overBudget: true })])
   expect(proposal?.kind).toBe('budget-up')
   expect(proposal?.next.budget?.minutes).toBe(480)
+})
+
+it('does not lower the budget from idle rounds, which did no work to be fast at', () => {
+  const runs = [run(1, { noNewWork: true }), run(1, { noNewWork: true }), run(1, { noNewWork: true }), run(1, { noNewWork: true }), run(1, { noNewWork: true })]
+  expect(proposeFor(rule(120), runs)).toBeUndefined()
 })

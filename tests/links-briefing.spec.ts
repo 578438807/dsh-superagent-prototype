@@ -9,8 +9,8 @@ const settings = (rules: { id: string; objective?: string }[] = []) => SettingsS
 const trigger = (job: string): Trigger => ({ id: 't', source: 'cron', threads: [], actor: { source: 'cron', id: 'clock' }, human: false, at: '', text: '',
   meta: { job } })
 const host = (runs: RuleRun[]): LinkHost => ({ store: { ruleRuns: { recent: () => runs } } } as unknown as LinkHost)
-const run = (day: string, over: Partial<Pick<RuleRun, 'hardPassed' | 'softPassed' | 'overBudget'>> & { minutes?: number } = {}): RuleRun =>
-  ({ ruleId: 'learn', day, ticketId: 't', minutes: 3, retries: 0, hardPassed: true, softPassed: true, overBudget: false, ...over })
+const run = (day: string, over: Partial<Pick<RuleRun, 'hardPassed' | 'softPassed' | 'overBudget' | 'noNewWork'>> & { minutes?: number } = {}): RuleRun =>
+  ({ ruleId: 'learn', day, ticketId: 't', minutes: 3, retries: 0, hardPassed: true, softPassed: true, overBudget: false, noNewWork: false, ...over })
 
 it('returns no briefing without a job or a matching rule', () => {
   expect(briefingFor(host([]), { ...trigger(''), meta: {} } as Trigger, settings([{ id: 'learn' }]))).toBeUndefined()
@@ -38,4 +38,10 @@ it('closes with the passed advice on a clean run', () => {
   const briefing = briefingFor(host([run('2026-11-04')]), trigger('daily-learn'), settings([{ id: 'learn' }]))
   expect(briefing?.advice).toBe('Last run passed; keep the same shape and report anything that changed.')
   expect(briefing?.objective).toBe('(none)')
+})
+
+it('names an idle round as such instead of calling its unrun checks a failure', () => {
+  const briefing = briefingFor(host([run('2026-11-04', { noNewWork: true, hardPassed: false, softPassed: false })]), trigger('daily-learn'), settings([{ id: 'learn' }]))
+  expect(briefing?.recent).toBe('2026-11-04: no new work, 3 min')
+  expect(briefing?.advice).toBe('Last run reported nothing new: check whether the job still has work before repeating it.')
 })

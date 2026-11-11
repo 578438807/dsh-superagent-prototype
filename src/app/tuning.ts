@@ -53,7 +53,8 @@ export function proposeFor(rule: Rule, runs: RuleRun[]): TuningProposal | undefi
       next: { ...rule, budget: { minutes: to, maxExtensions } },
     }
   }
-  const clean = recent.every(run => run.hardPassed && run.softPassed && !run.overBudget)
+  // An idle round did no work, so its fast, clean-looking row must not be evidence the budget is too generous.
+  const clean = recent.every(run => run.hardPassed && run.softPassed && !run.overBudget && !run.noNewWork)
   if (clean && recent.length >= 5 && peak < budget * 0.5) {
     const to = Math.max(1, Math.ceil(peak * 1.5))
     if (to >= budget) return undefined

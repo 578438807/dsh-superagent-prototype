@@ -15,6 +15,18 @@ export interface Verdict {
   invalid: string[]
 }
 
+/**
+ * Whether a ready report that claims `no_new_work` also names the artifact it checked. The flag stops a loop window
+ * asking, so a bare "no new work" must not be enough: the summary has to point at a file with an extension, which is
+ * something a person can open and compare. Any other report keeps the ordinary acceptance verdict, so the flag can never
+ * stand in for the checks.
+ * ponytail: an artifact path is the whole test; a rule whose honest idle reason is pure prose falls back to acceptance.
+ * Extend this when a real rule needs such a reason (a date, a count) to count.
+ */
+export function idleReason(summary: string): boolean {
+  return /[\w~.-]*[\\/][\w./\\-]*\.[\w-]+/.test(summary)
+}
+
 /** Reads a dotted path (`a.b.0.c`) out of parsed JSON; `undefined` when any step is missing. */
 function at(value: unknown, path: string): unknown {
   let cursor: unknown = value

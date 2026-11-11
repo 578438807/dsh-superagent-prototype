@@ -8,7 +8,7 @@ import { IM_WORDS } from '../../infra/text.ts'
 import type { Rule } from '../../policy.ts'
 import { claimPull, readPull } from '../../sources/github-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
-import { checkApprovals, checkHard, reviewSoft, today, type ReviewRoute, type Reviewer, type Verdict, elapsedMinutes } from '../acceptance.ts'
+import { checkApprovals, checkHard, reviewSoft, today, idleReason, type ReviewRoute, type Reviewer, type Verdict, elapsedMinutes } from '../acceptance.ts'
 import { failureLine, recordFailure } from '../failures.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
@@ -96,7 +96,7 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         pr_number: z.number().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
         reply_to_trigger_id: z.string().optional().describe('The explicit human question this report answers; never for ordinary progress.'),
         need_more: z.boolean().optional().describe('With state=progress: ask the host for one more assignment when the rule budget allows it; the host decides.'),
-        no_new_work: z.boolean().optional().describe('With state=ready: this round found nothing new to do, so a cron loop window stops asking this job until the next window.'),
+        no_new_work: z.boolean().optional().describe('With state=ready: this round found nothing new to do, so a cron loop window stops asking this job until the next window. The summary must name the artifact that did not change; without it the report is judged by acceptance as usual.'),
       }).strict(),
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
@@ -106,6 +106,9 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         let summary = args.summary
         const ruleId = current.mandate.basis.rules?.[0]
         const rule: Rule | undefined = ruleId ? host.store.settings().policy.rules.find(item => item.id === ruleId) : undefined
+        // `no_new_work` ends a loop window, so it only counts when the summary names what was checked: a bare "nothing new"
+        // is neither a reason nor a way past acceptance, and is recorded as an ordinary report.
+        const idle = args.state === 'ready' && args.no_new_work === true && idleReason(summary)
         // Approval classes are the host's own guard on what the work may touch: the plan's declared actions are checked
         // before anything else, so a ticket cannot carry a never-allowed or unapproved action into a ready report.
         if (rule) {
@@ -117,6 +120,9 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         }
         // Acceptance is the host's own verdict on "done": it runs before the report is recorded, so a worker cannot call
         // something ready that its rule's acceptance rejects. Only a ready report is judged; any other state stands as sent.
+        // A report that says this round found nothing new is an honest stop, not a failure: the hard checks still run, so the
+        // record says what they said, but a failure that only restates "nothing new today" is forgiven. A report without a
+        // verifiable reason keeps the ordinary verdict, so the flag can never skip acceptance.
         if (rule && state === 'ready' && ((rule.acceptance?.hard.length ?? 0) > 0 || (rule.acceptance?.soft.length ?? 0) > 0)) {
           const hard: Verdict = await checkHard(host.commands.withSignal(signal), rule, current.execution?.directory || host.stateDir, signal)
           let soft: Verdict | undefined
@@ -125,7 +131,11 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
             if (route && host.reviewer) soft = await reviewSoft(host.reviewer, route, rule, summary, signal, current.execution?.directory || host.stateDir)
           }
           const reasons = [...hard.reasons, ...(soft?.reasons ?? []), ...(hard.invalid.length ? [`unusable acceptance rules: ${hard.invalid.join('; ')}`] : [])]
-          if (!hard.passed || (soft !== undefined && !soft.passed)) {
+          const rejected = !hard.passed || (soft !== undefined && !soft.passed)
+          if (rejected && idle) {
+            // Kept as ready, and said plainly, so the recorded run is never read as a round that passed its checks.
+            summary = `${summary}\n\nNo new work this round: acceptance was not enforced (${reasons.join(' | ')}), and the run is recorded as idle rather than passed.`
+          } else if (rejected) {
             state = 'failed'
             summary = `${summary}\n\nAcceptance failed: ${reasons.join(' | ')}`
           }
@@ -134,7 +144,8 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
           host.store.ruleRuns.save({ ruleId: rule.id, day: today(), ticketId, minutes: Math.round(minutes * 10) / 10,
             retries: Math.max(0, assignments.length - 1), hardPassed: hard.passed,
             softPassed: soft === undefined ? hard.passed : soft.passed,
-            overBudget: rule.budget?.minutes !== undefined && minutes > rule.budget.minutes })
+            overBudget: rule.budget?.minutes !== undefined && minutes > rule.budget.minutes,
+            noNewWork: idle })
         }
         // A worker may ask for one more assignment, but only the rule's budget decides whether it gets one.
         const extensions = current.assignments.filter(item => item.endedReason === 'extended').length
@@ -158,7 +169,9 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
           const report = { state, summary, ...(args.human_action !== undefined ? { question: args.human_action } : {}),
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),
             ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}), ...(needMore ? { need_more: true } : {}),
-            ...(args.no_new_work ? { no_new_work: true } : {}) }
+            // Recorded only when the host accepted it as an idle round, so a report that bypassed nothing, or was failed on
+            // the way, never carries the flag that stops a loop window.
+            ...(idle && state === 'ready' ? { no_new_work: true } : {}) }
           const updated = host.engine.report(ticketId, report)
           const relay = reportRelay(updated, report)
           if (relay) host.sessions.relay(relay.id, relay.text)

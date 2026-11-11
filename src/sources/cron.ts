@@ -191,9 +191,10 @@ function renderText(job: CronJob, day: string): string {
 
 function renderLoopText(job: CronJob, day: string, round: number): string {
   const products = (job.products ?? '').trim()
+  // The host only honours the flag when the summary names an artifact, so the instruction says what that summary must hold.
   const idle = products
-    ? `本轮若没有让产物内容产生真实增量（${products} 去时间戳后与上轮相同），orchestrator_report 必须带 no_new_work:true，宿主据此结束本窗口。`
-    : '本轮若没有产生真实增量，orchestrator_report 必须带 no_new_work:true，宿主据此结束本窗口。'
+    ? `本轮若没有让产物内容产生真实增量（${products} 去时间戳后与上轮相同），orchestrator_report 必须带 no_new_work:true，并在 summary 里写出具体的产物路径（如 ${products}）与比对结果，宿主据此结束本窗口；只写一句「无新工作」不带路径会被判失败。`
+    : '本轮若没有产生真实增量，orchestrator_report 必须带 no_new_work:true，并在 summary 里写出具体的产物路径与比对结果，宿主据此结束本窗口；只写一句「无新工作」不带路径会被判失败。'
   return `【${job.title || job.job}】${day} 第 ${round} 轮，窗口内循环请处理。job=${job.job} round=${round}
 动手前先把计划写到 outputs/plans/<ticketId>.json（ticket/round/why_now/plan[{step,class}]/expected_output/eta_minutes），class 取 read/own-output/data-refresh/script-edit/policy-edit/delete/external-write/caliber 之一；caliber 只指「切换生产主口径」这一件事，复核/校验/断言/对比口径一律算 read 或 own-output，标成 caliber 会让整票被宿主判失败；同时在 outputs/state/<ruleId>.json 维护状态板（standing objective / facts 带日期与证据 / open threads / ruled out / last round）。先写计划再动手，转向要在报告里说明理由。
 ${idle}`

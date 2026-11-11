@@ -62,8 +62,8 @@ export function TuningPage() {
           <tbody>{data.history.flatMap(item => item.runs.length
             ? item.runs.map(entry => <tr key={`${item.ruleId}:${entry.day}`}>
               <td>{item.name}</td><td>{entry.day}</td><td>{entry.minutes.toFixed(1)}</td>
-              <td>{entry.retries}</td><td>{entry.hardPassed ? '✓' : '✗'}</td>
-              <td>{entry.softPassed ? '✓' : '✗'}</td><td>{entry.overBudget ? '✓' : ''}</td>
+              <td>{entry.retries}</td><td>{entry.noNewWork ? '—' : entry.hardPassed ? '✓' : '✗'}</td>
+              <td>{entry.noNewWork ? '—' : entry.softPassed ? '✓' : '✗'}</td><td>{entry.overBudget ? '✓' : ''}</td>
             </tr>)
             : [<tr key={item.ruleId}><td>{item.name}</td><td colSpan={6}>{t('tuningNoRuns')}</td></tr>])}
           </tbody>
