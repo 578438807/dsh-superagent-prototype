@@ -60,6 +60,18 @@ declare module '@deepseek-ai/cordis' {
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+/**
+ * What replaces the AgentTeams captain protocol in an Executor Session's prompt. The profile's text is the captain's: it drives
+ * a Web team through agent_teams_* tools that a worker Session does not have, and it names 14 of them. A worker leads its own
+ * subagents through spawn_teammate and the team_task_* board, so it keeps the collaboration duties and the tools it holds.
+ */
+const WORKER_TEAM_PROTOCOL = '## Team collaboration\n'
+  + 'Delegate a bounded piece of your own work with spawn_teammate, and the rest of this ticket yourself. Record what a member gets '
+  + 'with team_task_create and its progress with team_task_update; read the board with team_task_list and team_task_get. Ask or '
+  + 'answer a member with send_message, wait for it with wait_agent, stop it with interrupt_agent, and read list_agents before you '
+  + 'assume who is running. You do not create, approve, resume or edit a Web team: those tools are the main Session\'s, and a '
+  + 'request for one goes back to the main Session in your report. A member\'s report is input, not a result: check what it claims '
+  + 'before you rely on it, and report to the main Session what you verified rather than what a member said.'
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -271,8 +283,8 @@ export class Sessions {
       // and suppresses every nudge, so the session grows past the window and never folds. Tools registered below are added
       // after this restrict, so only the plugin-provided names that exist need listing here.
       const contextTools = ['compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image']
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...contextTools]
-        .filter(name => agent.ctx.tools.get(name)) }),
+      binding.disposers.push(this.restrictTools(agent, () => ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...contextTools]
+        .filter(name => agent.ctx.tools.get(name))),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
@@ -293,6 +305,47 @@ export class Sessions {
     } catch { return false }
   }
   /**
+   * `allow` plus every MCP tool this DSH has (`mcp__<server>__<tool>`), which no list can name in advance: a server decides its
+   * own tools, registers them globally, and re-registers them when it reconnects. Read from the global view, which no
+   * restriction filters, so the set stays readable while it is restricted; each name is checked once more so a tool that went
+   * away between reading and restricting is dropped rather than making `restrict` throw.
+   */
+  private mcpTools(agent: Agent): string[] {
+    try {
+      return agent.ctx.tools.schemas().map(schema => schema.name)
+        .filter(name => name.startsWith('mcp__') && agent.ctx.tools.get(name))
+    } catch { return [] }
+  }
+  /**
+   * Restrict `agent` to `allow()` and the MCP tools it has now, keeping that true across the registry changes an MCP server
+   * makes as it connects, reconnects and reloads: each `tools/change` re-applies the restriction when the MCP names differ.
+   * The names are recorded before restricting, so the change that restriction itself announces re-enters and stops at once
+   * instead of looping.
+   */
+  private restrictTools(agent: Agent, allow: () => string[]): () => void {
+    // Undefined, not empty: the first apply must register even an empty `allow`, which restricts every tool away.
+    let names: string[] | undefined, dispose = () => {}
+    const apply = () => {
+      const before = names, next = [...allow(), ...this.mcpTools(agent)]
+      if (before !== undefined && next.length === before.length && next.every((name, at) => name === before[at])) return
+      // Recorded before restricting: registering a restriction announces the change that calls this again.
+      names = next
+      try {
+        // The new restriction goes on before the older one comes off, so no call in between runs unmasked.
+        const fresh = agent.ctx.tools.restrict({ allow: next })
+        dispose()
+        dispose = fresh
+      } catch (error) {
+        // A tool that went away between reading it and restricting to it: keep the older restriction and try on the next change.
+        names = before
+        this.ctx.logger.warn('dsh-superagent could not restrict a Session to its MCP tools: %s', String(error))
+      }
+    }
+    apply()
+    const off = this.ctx.on('tools/change', apply)
+    return () => { off(); dispose() }
+  }
+  /**
    * An Executor Session's tools: only the profile's work tools, which DSH requires to be known, and none once its ticket
    * ended. A failed or blocked worker keeps its tools, so a person may continue it in its Session; only automated input waits
    * (see the executor). Read inherited tools through the parent scope, which includes the preset's tools. The global view
@@ -301,8 +354,7 @@ export class Sessions {
   private workOnly(agent: Agent, ticketId: string): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
-    const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
-    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+    return [this.restrictTools(agent, () => WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))), agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
     })]
