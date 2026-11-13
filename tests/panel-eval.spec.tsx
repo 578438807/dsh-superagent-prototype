@@ -3,6 +3,7 @@
 import { act } from 'react'
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
+import { LIMITS } from '../src/limits.ts'
 import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field } from './fixtures/panel.tsx'
 import { server } from './fixtures/panel-server.ts'
 
@@ -113,6 +114,43 @@ it('adds, copies, renames, disables and deletes rules in Policy without touching
   await click(zh.save)
   expect(server.settings.policy.rules.map(rule => [rule.name, rule.enabled])).toEqual([['文案修改', false], ['文档', true]])
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/policy'])
+})
+
+it('edits a rule\'s objective, red lines, acceptance items and budget in the rule editor, bounded by the same limits the host enforces',
+  async () => {
+  await mount()
+  await click(zh['tab.eval'])
+  await click(find(zh['tab.settings'], '.dt-status-head button'))
+  const rule = all('.dt-rule')[0]!
+  await click(rule.querySelector('[data-disclosure-row]') as HTMLElement)
+  const body = () => all('.dt-rule')[0]!
+  // Every bound on the rule editor is the constant the host schema uses, so the panel cannot offer more than the API takes.
+  expect(field<HTMLTextAreaElement>(zh.ruleObjective).maxLength).toBe(LIMITS.ruleObjective)
+  expect(field<HTMLTextAreaElement>(zh.ruleInstruction).maxLength).toBe(LIMITS.ruleInstruction)
+  // A red line and both kinds of acceptance item are rows: adding one starts empty, and each row's length is capped.
+  await click(find(zh.addRedLine, '.dt-rule button'))
+  const redLine = body().querySelector<HTMLInputElement>('input[aria-label="红线 1"]')!
+  expect(redLine.maxLength).toBe(LIMITS.ruleRedLine)
+  await type(redLine, 'never touch production data')
+  await click(find(zh.addAcceptanceItem, '.dt-rule button'))
+  await type(body().querySelector<HTMLInputElement>('input[aria-label="硬性验收 1"]')!, 'cmd: npm test')
+  const addSoft = all('.dt-rule button').filter(button => button.textContent === zh.addAcceptanceItem).at(-1)!
+  await click(addSoft)
+  await type(body().querySelector<HTMLInputElement>('input[aria-label="软性验收 1"]')!, 'the report is clear')
+  await type(field<HTMLTextAreaElement>(zh.ruleObjective), 'Keep the landing copy honest.')
+  await type(field<HTMLInputElement>(zh.ruleBudgetMinutes), '45')
+  await type(field<HTMLInputElement>(zh.ruleBudgetExtensions), '2')
+  // The number inputs carry the same bounds as the schema.
+  expect(field<HTMLInputElement>(zh.ruleBudgetMinutes).min).toBe(String(LIMITS.ruleBudgetMinutes.min))
+  expect(field<HTMLInputElement>(zh.ruleBudgetMinutes).max).toBe(String(LIMITS.ruleBudgetMinutes.max))
+  expect(field<HTMLInputElement>(zh.ruleBudgetExtensions).max).toBe(String(LIMITS.ruleMaxExtensions.max))
+  await click(zh.save)
+  expect(server.settings.policy.rules[0]).toMatchObject({ objective: 'Keep the landing copy honest.',
+    redLines: ['never touch production data'], acceptance: { hard: ['cmd: npm test'], soft: ['the report is clear'] },
+    budget: { minutes: 45, maxExtensions: 2 } })
+  // The row list stops at the schema's item count instead of letting the save fail on it.
+  await type(field<HTMLInputElement>(zh.ruleBudgetMinutes), '')
+  expect(body().querySelectorAll('input[aria-label="红线 1"]')).toHaveLength(1)
 })
 
 it('shows the current Policy version once, explains what makes it up, and opens a Mandate\'s version in the Policy history', async () => {

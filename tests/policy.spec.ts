@@ -254,7 +254,7 @@ describe('settings migration', () => {
       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
-      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [], heavyJobs: 1 },
+      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
       schedule: { mode: 'auto', windows: [] },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
@@ -483,5 +483,26 @@ describe('bots and events without a sender', () => {
       ['pulls', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['comments', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['ci', { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false }]])
+  })
+})
+
+describe('the bounds a person does not set', () => {
+  it('keeps reading a stored Executor block that still names the removed heavyJobs key, and a rule that still names heaviness',
+    () => {
+    const stored = { model: null, maxWorkers: 8, directory: 'C:/work', prepare: '', blockedCommands: [], heavyJobs: 1 }
+    expect(SettingsSchema.parse({ executor: stored }).executor).toMatchObject({ maxWorkers: 8 })
+    // Concurrency is maxWorkers alone; the stored count never divided the slot pool, so dropping it changes nothing.
+    expect(SettingsSchema.parse({ executor: { maxWorkers: 2 } }).executor).not.toHaveProperty('heavyJobs')
+    expect(SettingsSchema.parse({ policy: { rules: [{ id: 'r', name: 'R', enabled: true, instruction: 'i', heaviness: 'light' }] } })
+      .policy.rules[0]).toMatchObject({ heaviness: 'light' })
+  })
+  it('guards an approval list inside the code that reads class names rather than through a panel-editable limit', () => {
+    const rule = (approvals: Record<string, string[]>) => ({ policy: { rules: [{ id: 'r', name: 'R', enabled: true, instruction: 'i',
+      approvals }] } })
+    expect(SettingsSchema.parse(rule({ auto: ['read', 'own-output'] })).policy.rules[0]!.approvals).toEqual({ auto: ['read',
+      'own-output'], ask: [], never: [] })
+    // A class name longer than the code's own vocabulary, or a list longer than the guard, is refused — not offered as a setting.
+    expect(() => SettingsSchema.parse(rule({ auto: ['x'.repeat(41)] }))).toThrow()
+    expect(() => SettingsSchema.parse(rule({ auto: Array.from({ length: 21 }, (_, index) => `c${index}`) }))).toThrow()
   })
 })

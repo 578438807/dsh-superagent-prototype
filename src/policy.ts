@@ -77,10 +77,14 @@ export const RuleBudgetSchema = z.object({
   maxExtensions: z.number().int().min(LIMITS.ruleMaxExtensions.min).max(LIMITS.ruleMaxExtensions.max).default(0),
 }).strict()
 export type RuleBudget = z.infer<typeof RuleBudgetSchema>
+// How long an approval class name may be and how many a rule may list is a guard against a configuration accident, not a
+// number a person chooses: they belong to the code that reads the class names, so they stay out of `LIMITS` and the panel.
+const APPROVAL_CLASS_CHARS = 40
+const APPROVALS_PER_KIND = 20
 export const RuleApprovalsSchema = z.object({
-  auto: z.array(z.string().trim().min(1).max(LIMITS.approvalClass)).max(LIMITS.ruleApprovals).default([]),
-  ask: z.array(z.string().trim().min(1).max(LIMITS.approvalClass)).max(LIMITS.ruleApprovals).default([]),
-  never: z.array(z.string().trim().min(1).max(LIMITS.approvalClass)).max(LIMITS.ruleApprovals).default([]),
+  auto: z.array(z.string().trim().min(1).max(APPROVAL_CLASS_CHARS)).max(APPROVALS_PER_KIND).default([]),
+  ask: z.array(z.string().trim().min(1).max(APPROVAL_CLASS_CHARS)).max(APPROVALS_PER_KIND).default([]),
+  never: z.array(z.string().trim().min(1).max(APPROVAL_CLASS_CHARS)).max(APPROVALS_PER_KIND).default([]),
 }).strict()
 export type RuleApprovals = z.infer<typeof RuleApprovalsSchema>
 export const RuleSchema = z.object({ id: RuleIdSchema, name: z.string().trim().min(1).max(LIMITS.ruleName), enabled: z.boolean(),
@@ -91,7 +95,7 @@ export const RuleSchema = z.object({ id: RuleIdSchema, name: z.string().trim().m
   budget: RuleBudgetSchema.optional(),
   autonomy: z.enum(['high','medium','low']).optional(),
   approvals: RuleApprovalsSchema.optional(),
-  /** Per-rule heaviness hint (heavy jobs share a smaller slot pool). */
+  /** Accepted on the settings shape and otherwise unused: nothing reads it, so light/heavy changes no behaviour. Concurrency is `executor.maxWorkers`; making this field do something is a scheduling decision nobody has made. */
   heaviness: z.enum(['light','heavy']).optional() }).passthrough()
 export type Rule = z.infer<typeof RuleSchema>
 export const RoleModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
@@ -122,7 +126,6 @@ export const ExecutorConfigSchema = z.object({
   directory: z.string().trim().refine(path => path === '' || /^(?:[A-Za-z]:[\\/]|\/)/.test(path), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
-  heavyJobs: z.number().int().min(LIMITS.heavyJobs.min).max(LIMITS.heavyJobs.max).default(1),
 }).passthrough()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({

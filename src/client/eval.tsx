@@ -39,11 +39,42 @@ export function EvalStatus({ filter, window, paused }: { filter: DecisionFilter;
 }
 
 type Rule = Settings['policy']['rules'][number]
+type RuleBudget = NonNullable<Rule['budget']>
+/** One editable list of single-line entries, bounded in both directions: how many rows exist and how long one may be. */
+function LineList({ label, hint, lines, maxCount, maxLength, addLabel, onChange }: {
+  label: string; hint?: string | undefined; lines: string[]; maxCount: number; maxLength: number; addLabel: string
+  onChange: (next: string[]) => void
+}) {
+  const { t } = usePanel()
+  const set = (index: number, value: string) => onChange(lines.map((line, at) => at === index ? value : line))
+  return <div className="dt-field">
+    <div className="dt-subhead">
+      <span className="dt-field-head">{label}{hint && <InfoTip text={hint} />}<span className="dt-count">{lines.length || ''}</span></span>
+      <Button variant="ghost" size="sm" icon={<Icon name="plus" />} disabled={lines.length >= maxCount}
+        onClick={() => onChange([...lines, ''])}>{addLabel}</Button>
+    </div>
+    {lines.length > 0 && <ul className="dt-rows" style={{ ['--dt-columns' as string]: 1 }}>{lines.map((line, index) => <li key={index}
+      className="dt-rows-item">
+      <Input value={line} maxLength={maxLength} required aria-label={t('lineNumber', { label, index: index + 1 })}
+        placeholder={t('linePlaceholder')} spellCheck={false}
+        onChange={event => set(index, event.target.value)} />
+      <Button variant="ghost" size="sm" icon={<Icon name="trash" />}
+        aria-label={t('removeRow', { name: t('lineNumber', { label, index: index + 1 }) })}
+        onClick={() => onChange(lines.filter((_, at) => at !== index))} />
+    </li>)}</ul>}
+  </div>
+}
 function RuleRow({ rule, expanded, onToggle, onChange, onDuplicate, onRemove }: {
   rule: Rule; expanded: boolean; onToggle: () => void; onChange: (rule: Rule) => void; onDuplicate: () => void; onRemove: () => void
 }) {
   const { t } = usePanel()
   const name = rule.name.trim() || t('newRule')
+  const acceptance = rule.acceptance ?? { hard: [], soft: [] }
+  const budget: RuleBudget = rule.budget ?? { maxExtensions: 0 }
+  const editAcceptance = (next: Partial<typeof acceptance>) => onChange({ ...rule, acceptance: { ...acceptance, ...next } })
+  // Clearing the minutes field leaves the budget's extension count, which is always a number.
+  const editMinutes = (text: string) => onChange({ ...rule, budget: { ...budget, minutes: text.trim()
+    ? Number(text) : undefined } })
   return <li className="dt-rule">
     <DisclosureRow icon={<span className="dt-rule-dot" data-enabled={rule.enabled
       || undefined} />} title={name} open={expanded} onToggle={onToggle}
@@ -55,6 +86,29 @@ function RuleRow({ rule, expanded, onToggle, onChange, onDuplicate, onRemove }: 
           <textarea className="dt-textarea" rows={4} required maxLength={LIMITS.ruleInstruction} value={rule.instruction}
             placeholder={t('ruleInstructionPlaceholder')}
             onChange={event => onChange({ ...rule, instruction: event.target.value })} />
+        </Field>
+        <Field label={t('ruleObjective')} hint={t('ruleObjectiveHint')}>
+          <textarea className="dt-textarea" rows={3} maxLength={LIMITS.ruleObjective} value={rule.objective ?? ''}
+            placeholder={t('ruleObjectivePlaceholder')}
+            onChange={event => onChange({ ...rule, objective: event.target.value.trim() ? event.target.value : undefined })} />
+        </Field>
+        <LineList label={t('ruleRedLines')} hint={t('ruleRedLinesHint')} lines={rule.redLines ?? []}
+          maxCount={LIMITS.ruleRedLines} maxLength={LIMITS.ruleRedLine} addLabel={t('addRedLine')}
+          onChange={redLines => onChange({ ...rule, redLines: redLines.length ? redLines : undefined })} />
+        <LineList label={t('ruleAcceptanceHard')} hint={t('ruleAcceptanceHint')} lines={acceptance.hard}
+          maxCount={LIMITS.acceptanceItems} maxLength={LIMITS.acceptanceItem} addLabel={t('addAcceptanceItem')}
+          onChange={hard => editAcceptance({ hard })} />
+        <LineList label={t('ruleAcceptanceSoft')} hint={t('ruleAcceptanceSofterHint')} lines={acceptance.soft}
+          maxCount={LIMITS.acceptanceItems} maxLength={LIMITS.acceptanceItem} addLabel={t('addAcceptanceItem')}
+          onChange={soft => editAcceptance({ soft })} />
+        <Field label={t('ruleBudgetMinutes')} hint={t('ruleBudgetMinutesHint')}>
+          <Input type="number" min={LIMITS.ruleBudgetMinutes.min} max={LIMITS.ruleBudgetMinutes.max}
+            value={budget.minutes ?? ''} onChange={event => editMinutes(event.target.value)} />
+        </Field>
+        <Field label={t('ruleBudgetExtensions')} hint={t('ruleBudgetExtensionsHint')}>
+          <Input type="number" min={LIMITS.ruleMaxExtensions.min} max={LIMITS.ruleMaxExtensions.max}
+            value={budget.maxExtensions}
+            onChange={event => onChange({ ...rule, budget: { ...budget, maxExtensions: Number(event.target.value) } })} />
         </Field>
         <div className="dt-actions">
           <Button variant="ghost" size="sm" icon={<Icon name="copy" />} onClick={onDuplicate}>{t('duplicate')}</Button>

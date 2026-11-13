@@ -1,4 +1,4 @@
-/** Validation bounds shared between host schemas and management panel forms. */
+/** Validation bounds for the host zod schemas. Each constant is also the input limit of the panel control that sets the same value, so a person meets the bound the API does; the bounds that only a code path may set (approval class names, the length of a class list) live next to the code that sets them. */
 export const LIMITS = {
   ruleName: 100,
   ruleInstruction: 2000,
@@ -11,12 +11,9 @@ export const LIMITS = {
   ruleMaxExtensions: { min: 0, max: 5 },
   evalTimeoutSeconds: { min: 30, max: 600 },
   maxWorkers: { min: 1, max: 16 },
-  heavyJobs: { min: 0, max: 16 },
   prepareCommand: 4000,
   promptMaxChars: { min: 1000, max: 1_000_000 },
   admissionContextMaxPages: { min: 1, max: 100 },
   admissionContextTimeoutMs: { min: 1, max: 90_000 },
-  ruleApprovals: 20,
-  approvalClass: 40,
   scheduleWindows: { min: 0, max: 12 },
 } as const
