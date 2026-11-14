@@ -53,13 +53,20 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 /**
- * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills, its todo list and
- * subagents. It gets no other tool the profile has, whenever it was registered: none that asks or shows a person something,
- * changes the profile, schedules work or starts goals outside the worker slots, the pause and a person's hold, starts or
- * messages other Sessions, or edits documents.
+ * The context-management tools a context plugin registers globally. Both Sessions list them from here, so the lists cannot
+ * drift apart: without them on the wire the plugin sees no compress surface and suppresses every nudge, and a Session grows
+ * past the window and never folds.
  */
-const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
-  'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+const CONTEXT_TOOLS = ['compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image'] as const
+/**
+ * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills, its todo list,
+ * subagents and its own context management. It gets no other tool the profile has, whenever it was registered: none that
+ * asks or shows a person something, changes the profile, schedules work or starts goals outside the worker slots, the pause
+ * and a person's hold, starts or messages other Sessions, or edits documents.
+ */
+const WORK_TOOLS: readonly string[] = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill',
+  'web_search', 'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent',
+  ...CONTEXT_TOOLS]
 /**
  * What replaces the AgentTeams captain protocol in an Executor Session's prompt. The profile's text is the captain's: it drives
  * a Web team through agent_teams_* tools that a worker Session does not have, and it names 14 of them. A worker leads its own
@@ -278,12 +285,11 @@ export class Sessions {
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
       // Keep only the tools this DSH registers: a profile without `bash` (Windows, pwsh only) would otherwise make restrict throw.
-      // The main Session also keeps the context-management tools a context plugin registers globally (compress, decompress,
-      // search_context, acp_status, acp_cache, acp_read_original_image): without them billion-context sees no compress surface
-      // and suppresses every nudge, so the session grows past the window and never folds. Tools registered below are added
-      // after this restrict, so only the plugin-provided names that exist need listing here.
-      const contextTools = ['compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image']
-      binding.disposers.push(this.restrictTools(agent, () => ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...contextTools]
+      // The main Session also keeps the context-management tools a context plugin registers globally (see CONTEXT_TOOLS):
+      // without them billion-context sees no compress surface and suppresses every nudge, so the session grows past the
+      // window and never folds. Tools registered below are added after this restrict, so only the plugin-provided names that
+      // exist need listing here.
+      binding.disposers.push(this.restrictTools(agent, () => ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...CONTEXT_TOOLS]
         .filter(name => agent.ctx.tools.get(name))),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {

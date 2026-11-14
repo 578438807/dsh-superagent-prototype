@@ -124,6 +124,8 @@ function feishu(id: string, text: string, overrides: Record<string, unknown> = {
 const worktreeName = 'fix-regression'
 /** The MCP tools the fixture's profile gives every Session, which a Session must keep: as mcp-client names codegraph's one tool. */
 const MCP_TOOLS = ['mcp__codegraph__codegraph_explore']
+/** What a context plugin such as billion-context registers globally: without them on the wire it sees no compress surface. */
+const CONTEXT_TOOL_NAMES = ['compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image']
 /** Route one decision with the main Session's orchestrator_route, answering its result; a refused one throws its reason. */
 async function route(item: Record<string, unknown>): Promise<Record<string, unknown>> {
   const { results } = await runTool(runtime.masterId, 'orchestrator_route', { decisions: [item] }) as { results: Record<string, unknown>[] }
@@ -1577,6 +1579,32 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session 
   // the worker slots, reach other Sessions or edit documents, whenever they were registered.
   expect(restricts.get(sessionId)).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search', 'skill',
     ...MCP_TOOLS] }])
+})
+
+it('gives an Executor Session the context-management tools a context plugin registers, in the order the main Session lists them', async () => {
+  // What billion-context registers globally; a profile without the plugin registers none of them (the test below). The main
+  // Session was decorated before this registration, so it must pick them up from the `tools/change` a plugin's registration
+  // announces, which the last of its restrictions shows.
+  inheritedTools.push(...CONTEXT_TOOL_NAMES)
+  await (runtime as unknown as { ctx: Context }).ctx.parallel('tools/change')
+  const { sessionId } = await acceptedTicket()
+  // A worker that cannot name `compress` leaves the plugin no compress surface on the wire, so it suppresses every nudge and
+  // the Session grows past the window and never folds.
+  expect(restricts.get(sessionId)).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search',
+    'skill', ...CONTEXT_TOOL_NAMES, ...MCP_TOOLS] }])
+  // The main Session keeps the same six, after the tools it already had: its set is the one the change left untouched.
+  expect(restricts.get(runtime.masterId)!.at(-1)).toEqual({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill',
+    'compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image', ...MCP_TOOLS] })
+})
+
+it('skips a context-management tool the profile does not register, without failing the restriction', async () => {
+  // This profile registers none of the six. `restrict` throws on a name it does not know, so reaching the assertions at all
+  // proves the worker's list filtered them out rather than named them.
+  const { sessionId } = await acceptedTicket()
+  const worker = (restricts.get(sessionId)![0] as { allow: string[] }).allow
+  const main = (restricts.get(runtime.masterId)![0] as { allow: string[] }).allow
+  expect(worker.filter(name => CONTEXT_TOOL_NAMES.includes(name))).toEqual([])
+  expect(main.filter(name => CONTEXT_TOOL_NAMES.includes(name))).toEqual([])
 })
 
 it('adds an MCP server\'s tools to a Session that was already restricted when the server registers them', async () => {
