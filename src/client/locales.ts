@@ -231,7 +231,7 @@ const TEXT = {
   ruleRedLinesHint: ['执行者永不越过的界线；碰到其中任何一条，它会停下来报告。', 'Lines the executor never crosses; it stops and reports instead.'],
   addRedLine: ['添加红线', 'Add red line'],
   ruleAcceptanceHard: ['硬性验收', 'Hard acceptance'],
-  ruleAcceptanceHint: ['由宿主执行的检查，写成 cmd: / file: / json: / date: 之一；返回码非 0 或值不符即未通过。', 'Checks the host runs, written as cmd:, file:, json: or date:; a non-zero exit code or a mismatched value fails.'],
+  ruleAcceptanceHint: ['由宿主执行的检查，写成 cmd: / file: / json: / date: / edge: 之一；返回码非 0 或值不符即未通过。edge: 比两边的集合，例如 edge: a.json#rows[].name -> b.json#names 表示「a 里每一项都要在 b 里出现」。', 'Checks the host runs, written as cmd:, file:, json:, date: or edge:; a non-zero exit code or a mismatched value fails. edge: compares two sets, e.g. edge: a.json#rows[].name -> b.json#names means every name from a must appear in b.'],
   ruleAcceptanceSoft: ['软性验收', 'Soft acceptance'],
   ruleAcceptanceSofterHint: ['由独立的审阅者读报告判断，不做机器检查。', 'Judged by an independent reviewer reading the report, not checked by a machine.'],
   addAcceptanceItem: ['添加验收项', 'Add acceptance item'],

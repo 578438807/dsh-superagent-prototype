@@ -326,7 +326,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
 | `src/app/settings.ts` | Settings |
-| `src/app/acceptance.ts` | Host-side acceptance: `checkHard` parses a rule's hard checks, `reviewSoft` asks the reviewer to read the worker's report against the rule's criteria, `checkApprovals` refuses an action class the rule does not allow, and `idleReason` tells a no-new-work report from a bare claim |
+| `src/app/acceptance.ts` | Host-side acceptance: `checkHard` parses a rule's hard checks — `cmd:`, `file:`, `json:`, `date:` and `edge:`, the last comparing two artifacts as sets — `reviewSoft` asks the reviewer to read the worker's report against the rule's criteria, `checkApprovals` refuses an action class the rule does not allow, and `idleReason` tells a no-new-work report from a bare claim |
 | `src/app/failures.ts` | The failure ledger: `failureLine` and `recordFailure`, one JSON line per unfinished report under `outputs/failures` |
 | `src/app/tuning.ts` | Tuning proposals: `proposeFor` and `tuningView` derive rule-config changes from recorded acceptance history; applying is a person's click |
 | `src/app/settings-history.ts` | `policyHistory`: each saved settings revision with what it changed from the one before |
@@ -418,6 +418,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/cron.spec.ts` | The Cron Source: fires, loop rounds inside a window, round gating and backoff, and the health it reports |
 | `tests/local-mode.spec.ts` | A local-only deployment: setup resolving without a GitHub repository, and the sources it can start |
 | `tests/acceptance.spec.ts` | Hard acceptance checks: `file:`, `json:` and `date:` expressions, their failures, and rules without checks |
+| `tests/acceptance-edge.spec.ts` | The `edge:` relation check: subsets and counts, the three selectors, empty and unreadable sides, and a case where both files exist yet the relation fails |
 | `tests/acceptance-report.spec.ts` | A `ready` report through the host's hard acceptance gate |
 | `tests/acceptance-no-new-work.spec.ts` | A `ready` report that found nothing new: the reason it must give, and the idle run it records |
 | `tests/acceptance-soft.spec.ts` | The soft review of a worker's report against a rule's subjective criteria |
