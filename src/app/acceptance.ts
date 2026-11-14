@@ -19,8 +19,8 @@
  *
  * With no comparator the check is `left ⊆ right`: every left member must appear on the right. A comparator counts the
  * left members that do appear: `>= 3` needs at least three, `== 3` exactly three, `<= 1` at most one. An empty left set
- * fails — a subset relation over nothing is vacuously true and nearly always means a wrong selector or an upstream
- * artifact that produced nothing — unless the expression says `allow-empty` plainly.
+ * always fails — a subset relation over nothing is vacuously true and nearly always means a wrong selector or an upstream
+ * artifact that produced nothing — and `allow-empty` is the only thing that excuses it, with or without a comparator.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
@@ -69,10 +69,14 @@ type Selector = { kind: 'keys' } | { kind: 'steps'; steps: SelectorStep[] }
 /** One step: `name`, `name[]`, `name[field=value]`, or `name[][field=value]`. */
 const SELECTOR_STEP = /^([A-Za-z_$][\w$-]*)(\[\])?(?:\[([^[\]=]+)=([^[\]]*)\])?$/
 
-/** A member both sides can compare: text as writ, a number or boolean by its text form. */
+/**
+ * A member both sides can compare: text as writ, a number by its text form. Anything else is a type the relation
+ * cannot mean, so it is an error rather than an invented match — `true` must never equal the text `"true"`.
+ * ponytail: only text and numbers compare; a catalog keyed by booleans needs a selector that names its text field.
+ */
 function member(value: unknown, label: string): string {
   if (typeof value === 'string') return value
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof value === 'number') return String(value)
   const shown = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
   throw new Error(`${label} selects a ${shown} member, which cannot compare; select text or numbers`)
 }
@@ -201,12 +205,13 @@ function checkEdge(body: string, cwd: string): { reasons: string[]; understood: 
     return { reasons: [`hard edge unusable: ${body} — ${(error as Error).message}`], understood: false }
   }
   const distinct = [...new Set(left)]
-  if (distinct.length === 0) {
-    if (expression.allowEmpty) return { reasons: [], understood: true }
-    return { reasons: [`hard edge empty left set: ${body} — ${expression.leftPath} selected nothing; write allow-empty if that is expected`], understood: true }
-  }
   const present = distinct.filter(value => right.has(value))
   const missing = distinct.filter(value => !right.has(value))
+  // An empty left set is the suspect case, so it fails before either comparison — a comparator must not turn `0 of 0`
+  // into a pass. `allow-empty` is what says such a left side is expected; a comparator beside it still counts.
+  if (distinct.length === 0 && !expression.allowEmpty) {
+    return { reasons: [`hard edge empty left set: ${body} — ${expression.leftPath} selected nothing; write allow-empty if that is expected`], understood: true }
+  }
   if (expression.compare) {
     const { op, count } = expression.compare
     const ok = op === '>=' ? present.length >= count : op === '<=' ? present.length <= count : present.length === count

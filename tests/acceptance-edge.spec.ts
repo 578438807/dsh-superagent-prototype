@@ -38,15 +38,24 @@ it('fails on the one left member the right side lacks, and names it', async () =
   expect(verdict.reasons).toEqual(['hard edge missing 1 of 2: up.json#names -> down.json#rows[].name — on the left but not the right: beta'])
 })
 
-it('fails an empty left set unless the expression says allow-empty', async () => {
+it('fails an empty left set whatever the comparator, unless the expression says allow-empty', async () => {
   const cwd = dir()
   write(cwd, 'up.json', { rows: [] })
   write(cwd, 'down.json', { names: ['x'] })
-  const strict = await run(cwd, 'edge: up.json#rows[].name -> down.json#names')
-  expect(strict.passed).toBe(false)
-  expect(strict.reasons[0]).toContain('hard edge empty left set')
+  // An empty left set is the suspect case: a comparator must not turn `0 of 0` into a pass.
+  for (const check of ['edge: up.json#rows[].name -> down.json#names',
+    'edge: up.json#rows[].name -> down.json#names >= 1',
+    'edge: up.json#rows[].name -> down.json#names == 0',
+    'edge: up.json#rows[].name -> down.json#names <= 0']) {
+    const verdict = await run(cwd, check)
+    expect(verdict.passed, check).toBe(false)
+    expect(verdict.invalid, check).toEqual([])
+    expect(verdict.reasons[0], check).toContain('hard edge empty left set')
+  }
   const allowed = await run(cwd, 'edge: up.json#rows[].name -> down.json#names allow-empty')
   expect(allowed).toEqual({ passed: true, reasons: [], invalid: [] })
+  const allowedCounted = await run(cwd, 'edge: up.json#rows[].name -> down.json#names allow-empty >= 0')
+  expect(allowedCounted).toEqual({ passed: true, reasons: [], invalid: [] })
 })
 
 it('fails loudly on a selector it cannot parse', async () => {
@@ -135,6 +144,13 @@ it('compares numbers by their text form and rejects members it cannot compare', 
   expect(bad.passed).toBe(false)
   expect(bad.invalid).toHaveLength(1)
   expect(bad.reasons[0]).toContain('cannot compare')
+  // A boolean is not the text `"true"`: inventing that match would let a flag pass for a name.
+  write(cwd, 'flags.json', { values: [true] })
+  write(cwd, 'words.json', { values: ['true'] })
+  const bool = await run(cwd, 'edge: flags.json#values -> words.json#values')
+  expect(bool.passed).toBe(false)
+  expect(bool.invalid).toHaveLength(1)
+  expect(bool.reasons[0]).toContain('selects a boolean member')
 })
 
 it('leaves the other four forms untouched when a rule mixes them', async () => {
