@@ -95,8 +95,7 @@ export const RuleSchema = z.object({ id: RuleIdSchema, name: z.string().trim().m
   budget: RuleBudgetSchema.optional(),
   autonomy: z.enum(['high','medium','low']).optional(),
   approvals: RuleApprovalsSchema.optional(),
-  /** Accepted on the settings shape and otherwise unused: nothing reads it, so light/heavy changes no behaviour. Concurrency is `executor.maxWorkers`; making this field do something is a scheduling decision nobody has made. */
-  heaviness: z.enum(['light','heavy']).optional() }).passthrough()
+  }).passthrough()
 export type Rule = z.infer<typeof RuleSchema>
 export const RoleModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
 export type RoleModel = z.infer<typeof RoleModelSchema>
