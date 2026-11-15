@@ -2,7 +2,7 @@
 /** Ten minutes between wake-ups: often enough to notice a stall, rare enough not to nag. */
 const HEARTBEAT_MS = 10 * 60_000
 /** The wake-up text: a check, not a job. */
-const HEARTBEAT_TEXT = 'Heartbeat: read outputs/failures for today, triage what is stuck, and update the state board. Do not open a ticket for this message.'
+const HEARTBEAT_TEXT = 'Heartbeat: read outputs/failures for today, triage what is stuck, and update the state board. Also run python scripts/loop_liveness.py --hours 6: a job reported did-not-run means it never started, not that nothing was stuck. Zero tickets at a trigger time is an alarm; failures/ and live-ticket counts cannot show it. Do not open a ticket for this message.'
 /** Ten minutes before the window closes, ask for the daily summary even while tickets are still open. */
 const DAILY_SUMMARY_TEXT = 'Daily summary: the window closes soon. Write outputs/daily-summary/<yyyyMMdd>.md for today: one-line conclusion, what each post did, what was found, at most three decisions each with an A/B option and a default action, and the system state. Do not open a ticket for this message.'
 import { Service, type Context } from '@deepseek-ai/cordis'
