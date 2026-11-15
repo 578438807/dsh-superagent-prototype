@@ -32,6 +32,12 @@ const JobSchema = z.object({
   window: LoopWindowSchema.optional(),
   /** Repo-relative product paths (`,`/`;`/newline separated) whose content decides whether a completed loop round added anything. */
   products: z.string().trim().max(2000).optional(),
+  /**
+   * A job whose rounds are memory-bound (the combo backtest peaks at ~9.2 GB per shard here). Two of them at once exhaust the
+   * machine, so a heavy job waits while another heavy job holds an open ticket. This replaces the removed
+   * `executor.heavyJobs` setting, which nothing read.
+   */
+  heavy: z.preprocess(value => value === true || value === 'true', z.boolean()).optional(),
 }).strict()
 export type CronJob = z.infer<typeof JobSchema>
 
@@ -224,6 +230,26 @@ function openFor(ctx: SourceContext, job: string): string[] {
 }
 
 /**
+ * Whether another memory-bound job holds an open ticket right now.
+ *
+ * The jobs come from the Source's own configuration, so a job renamed or removed stops counting immediately; a job with
+ * no `heavy` flag never blocks anything. Rounds that already reported failed or blocked are concluded, not running, so
+ * they do not hold the machine and do not block the next heavy job.
+ */
+function heavyBusy(ctx: SourceContext, self: string): boolean {
+  const config = ctx.config<CronConfig>(SOURCE)
+  const heavy = new Set((config?.jobs ?? []).filter(job => job.heavy === true && job.job !== self).map(job => job.job))
+  if (heavy.size === 0) return false
+  return ctx.tickets.open().some(ticket => {
+    if (concluded(ctx, ticket.id)) return false
+    return ticket.origin.triggerIds.some(id => {
+      const job = (ctx.triggers.get(id)?.meta as { job?: string } | undefined)?.job
+      return job !== undefined && heavy.has(job)
+    })
+  })
+}
+
+/**
  * Whether a ticket already reported failed or blocked: it is waiting for triage rather than for work, so it must not
  * hold the loop. A retried ticket starts a fresh assignment and is live again.
  */
@@ -264,8 +290,12 @@ function lastRoundState(ctx: SourceContext, job: string, day: string, last: numb
   return ticket?.assignments[ticket.assignments.length - 1]?.report?.state
 }
 
-/** A timestamp key, whatever its prefix: `built_at`, `generated_at`, `source_discovered_built_at`, `at`, and so on. */
-const VOLATILE_KEY = /^(?:.*_)?at$|^ts$/
+/**
+ * A key whose value changes on every run without saying anything about the work: timestamps (`built_at`, `generated_at`, `at`, `ts`)
+ * and durations (`seconds`, `elapsed_ms`). A duration left in the fingerprint makes a product that reran to the same numbers look
+ * different, so `productsIdle` could never stop that job: `runs/combo-zoo.json` carries `seconds` and reported nothing as idle.
+ */
+const VOLATILE_KEY = /^(?:.*_)?at$|^ts$|^(?:seconds|elapsed|elapsed_ms|duration|duration_ms|runtime_seconds)$/
 
 /** A value with its timestamp keys removed, so two rounds that wrote the same findings hash the same. */
 export function stampFree(value: unknown): unknown {
@@ -340,10 +370,11 @@ function failureStreak(ctx: SourceContext, job: string, day: string, last: numbe
     }
     states.unshift(...reports)
   }
+  // Only `failed` counts. `blocked` means the worker reported what it was missing and is waiting for a person, which is
+  // honest work, and two of those closed the window for the rest of the night — a non-trading day alone would do it.
   let streak = 0
   for (let index = states.length - 1; index >= 0; index -= 1) {
-    const state = states[index]
-    if (state !== 'failed' && state !== 'blocked') break
+    if (states[index] !== 'failed') break
     streak += 1
   }
   return streak
@@ -358,22 +389,31 @@ const IGNORE_BACKOFF_MS = 15 * 60_000
 /** A job that keeps having nothing to do is woken at most this seldom, so an idle window costs a few assessments rather than one per quarter hour. */
 const IGNORE_BACKOFF_MAX_MS = 4 * 60 * 60_000
 
-/** How long to wait before the next round after consecutive rounds the assessor ignored for having nothing to do. */
+/**
+ * How long to wait before asking the job for another round.
+ *
+ * Two different verdicts share this wait. `ignore` means the assessor judged the round and found nothing worth opening,
+ * so repeats double the interval: 15 min, 30, 60, 120, up to four hours. `unavailable` means the assessment timed out and
+ * the round was never judged at all, so it only waits the base interval again — doubling it used to turn a run of 120s
+ * timeouts into hours of silence in the middle of a busy night.
+ */
 function ignoreBackoff(ctx: SourceContext, job: string, day: string, last: number): { since: string; wait: number } | undefined {
   if (last <= 0) return undefined
-  let count = 0
+  let ignored = 0
+  let timedOut = false
   let since: string | undefined
-  for (let round = last; round > 0 && count < 8; round -= 1) {
+  for (let round = last; round > 0 && round > last - 8; round -= 1) {
     const decisions = ctx.decisions.byThread(`${SOURCE}:${job}:${day}:${round}`)
     const decision = decisions[decisions.length - 1]
-    // An `unavailable` decision is a timed-out assessment: the round was never judged, so the next one would only
-    // queue another unassessed round. Backing off exactly like an explicit ignore keeps a busy window from spinning.
-    if (decision === undefined || (decision.kind !== 'ignore' && decision.kind !== 'unavailable')) break
-    if (since === undefined) since = decision.at
-    count += 1
+    if (decision === undefined) break
+    if (decision.kind === 'unavailable') { timedOut = true; since ??= decision.at; continue }
+    if (decision.kind !== 'ignore') break
+    since ??= decision.at
+    ignored += 1
   }
   if (since === undefined) return undefined
-  return { since, wait: Math.min(IGNORE_BACKOFF_MS * 2 ** (count - 1), IGNORE_BACKOFF_MAX_MS) }
+  if (timedOut && ignored === 0) return { since, wait: IGNORE_BACKOFF_MS }
+  return { since, wait: Math.min(IGNORE_BACKOFF_MS * 2 ** Math.max(ignored - 1, 0), IGNORE_BACKOFF_MAX_MS) }
 }
 
 /** The session day a loop round belongs to: after midnight the window belongs to the evening it opened. */
@@ -400,6 +440,9 @@ export async function loopStep(ctx: SourceContext, repo: string, job: CronJob, a
   }
   if (!loopActive(window, at)) return
   if (live.length > 0) return
+  // A memory-bound job does not start while another one is still running: measured 9.0-9.1 GB per combo shard on this
+  // machine, so two at once swap. The guard reads the other jobs' open tickets, so it needs no extra state.
+  if (job.heavy === true && heavyBusy(ctx, job.job)) return
   const last = ctx.state.get(KV.cron.round(job.job, day)) ?? 0
   // A round's trigger reaches a ticket about a minute later; without this the next round fires before that verdict exists.
   if (last > 0 && roundPending(ctx, job.job, day, last)) return

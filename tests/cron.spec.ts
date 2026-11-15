@@ -2,7 +2,7 @@ import { expect, it } from 'vitest'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fire, localDate, nextDue, nextFire, productsFingerprint, productsIdle, stampFree, tradeDay } from '../src/sources/cron.ts'
+import { fire, localDate, nextDue, nextFire, productsFingerprint, productsIdle, stampFree, tradeDay, loopStep } from '../src/sources/cron.ts'
 import type { SourceContext } from '../src/sources/host.ts'
 
 const iso = (at: Date | null) => at?.toISOString()
@@ -170,5 +170,50 @@ it('judges a finished round idle only when its products are unchanged', async ()
     // A round with no recorded baseline, or a job with no products, is not judged here.
     expect(await productsIdle(ctx, repo, job, '2026-11-09', 9)).toBe(false)
     expect(await productsIdle(ctx, repo, loopJob(''), '2026-11-09', 2)).toBe(false)
+  } finally { await rm(repo, { recursive: true, force: true }) }
+})
+// A product that records its own runtime must still hash by what it found: `runs/combo-zoo.json` carries `seconds`, so
+// leaving durations in the fingerprint meant the strategy job could never be judged idle and ran until the hard stop.
+it('drops duration keys so a rerun to the same numbers hashes the same', () => {
+  const before = { combos: [{ cagr: 0.1 }], built_at: 'r1', seconds: 2836.5 }
+  const after = { combos: [{ cagr: 0.1 }], built_at: 'r2', seconds: 1900.1 }
+  expect(stampFree(before)).toEqual(stampFree(after))
+  expect(stampFree({ combos: [{ cagr: 0.1 }], seconds: 1, elapsed_ms: 2, duration_ms: 3 }))
+    .toEqual({ combos: [{ cagr: 0.1 }] })
+  // A key that is only spelled like a duration stays a finding.
+  expect(stampFree({ seconds_of_day: 1 })).toEqual({ seconds_of_day: 1 })
+})
+
+// A heavy job waits while another heavy job is open: two combo shards at ~9.2 GB each would swap the machine.
+it('keeps a heavy job from starting while another heavy job holds an open ticket', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'cron-heavy-'))
+  try {
+    const jobs = [
+      { job: 'daily-strategy', cron: '10 0 * * *', title: '', onlyTradingDays: false, heavy: true,
+        loop: true, window: { start: '00:10', cutoff: '06:00', hardStop: '06:30' } },
+      { job: 'daily-learn', cron: '50 23 * * *', title: '', onlyTradingDays: false, heavy: true,
+        loop: true, window: { start: '23:50', cutoff: '06:00', hardStop: '06:30' } },
+    ]
+    const tickets = [
+      { id: 'a', ended: undefined, origin: { triggerIds: ['loop:daily-learn:2026-11-15:1'] }, assignments: [] },
+    ]
+    const received: string[] = []
+    const ctx = {
+      config: () => ({ repo, jobs }),
+      state: { get: () => 0, set: () => {}, keys: () => [] },
+      threads: { get: () => undefined, describe: () => {} },
+      triggers: { get: (id: string) => id === 'loop:daily-learn:2026-11-15:1' ? { meta: { job: 'daily-learn' } } : undefined },
+      tickets: { open: () => tickets, get: () => undefined },
+      decisions: { byThread: () => [] },
+      receive: async (t: { id: string }) => { received.push(t.id); return 'stored' },
+      report: () => {},
+    } as unknown as SourceContext
+    // The other heavy job holds an open ticket, so this round must not open.
+    await loopStep(ctx, repo, jobs[0] as never, new Date('2026-11-16T00:10:00+08:00'))
+    expect(received).toEqual([])
+    // Once that ticket ends, the round opens.
+    tickets.length = 0
+    await loopStep(ctx, repo, jobs[0] as never, new Date('2026-11-16T00:11:00+08:00'))
+    expect(received).toHaveLength(1)
   } finally { await rm(repo, { recursive: true, force: true }) }
 })
