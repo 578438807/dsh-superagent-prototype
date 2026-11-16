@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { Engine, MemoryRepositories, UserError, followupOwners, key, runningAssignment, ticketOutcome, ticketStage,
+import { Engine, MemoryRepositories, UserError, followupOwners, key, latestAssignment, liveTicket, runningAssignment, ticketOutcome, ticketStage,
   waitsForPerson } from '../src/core/index.ts'
 import type { Assessor, Assignment, Candidate, EngineOptions, Executor, OutboundMessage, Outcome, Policy, Ticket, Trigger } from '../src/core/index.ts'
 
@@ -1159,19 +1159,49 @@ describe('problems', () => {
     expect(h.repo.decisions.get(unavailable.id)).toMatchObject({ dismissed: true })
   })
 })
+describe('a report that ends its Assignment', () => {
+  it('ends the Assignment of a worker that reported failed, while its ticket stays open and waits', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.report(ticketId, { state: 'failed', summary: 'the prepare command failed' })
+    const ticket = h.repo.tickets.get(ticketId)!
+    expect(liveTicket(ticket)).toBe(true)
+    expect(runningAssignment(ticket)).toBeUndefined()
+    expect(latestAssignment(ticket)).toMatchObject({ state: 'ended', endedReason: 'reportedFailed' })
+    expect(latestAssignment(ticket)?.report).toMatchObject({ state: 'failed' })
+    expect(waitsForPerson(ticket)).toBe(true)
+    expect(ticketStage(ticket)).toEqual({ stage: 'person', action: 'failed' })
+  })
+  it('ends the Assignment of a worker that reported blocked, and opens a new one for a person\'s message', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.report(ticketId, { state: 'blocked', summary: 'which colour?' })
+    const blocked = h.repo.tickets.get(ticketId)!
+    expect(runningAssignment(blocked)).toBeUndefined()
+    expect(ticketStage(blocked)).toEqual({ stage: 'person', action: 'blocked' })
+    h.tick(5); h.engine.receive(trigger('2')); h.settle()
+    const ticket = h.repo.tickets.get(ticketId)!
+    expect(ticket.assignments.map(item => item.state)).toEqual(['ended', 'running'])
+    expect(runningAssignment(ticket)!.id).toBe(ticket.assignments[1]!.id)
+    expect(waitsForPerson(ticket)).toBe(false)
+  })
+})
+
 describe('retry after a failed delivery', () => {
   it('starts a new Assignment for a ticket whose Input keeps failing to reach its worker, which takes the Input', () => {
     const h = harness()
     const ticketId = accepted(h).ticketId!
     h.engine.report(ticketId, { state: 'failed', summary: 'tests fail' })
-    // A person's answer goes to the failed worker, and delivering it fails.
+    // The failed report ended that Assignment, so a person's answer starts a new one, whose delivery then fails.
     h.tick(5); h.engine.receive(trigger('2'))
     const answered = h.repo.tickets.get(ticketId)!
     expect(answered.undelivered).toHaveLength(1)
-    h.engine.deliveryFailed(ticketId, runningAssignment(answered)!.id, 'Session gone')
+    const started = answered.assignments.at(-1)!
+    h.engine.assignmentStarted(ticketId, started.id)
+    h.engine.deliveryFailed(ticketId, started.id, 'Session gone')
     expect(ticketStage(h.repo.tickets.get(ticketId)!)).toEqual({ stage: 'person', action: 'delivery' })
     const retried = h.engine.retryTicket(ticketId)
-    expect(retried.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
+    expect(retried.assignments.map(item => item.state)).toEqual(['ended', 'ended', 'pending'])
     expect(retried).not.toHaveProperty('delivery')
     expect(retried.undelivered).toHaveLength(1)
   })

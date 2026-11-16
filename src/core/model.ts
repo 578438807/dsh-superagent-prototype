@@ -332,6 +332,14 @@ export function reached(ticket: Ticket, trigger: Trigger, thread: (key: string) 
   }) || (input && (context || !trigger.threads.every(ref => thread(threadKey(ref))?.context?.includes(ticket.id))))
 }
 export const latestAssignment = (ticket: Ticket): Assignment | undefined => ticket.assignments.at(-1)
+/**
+ * The reasons with which a blocked or failed report ends its Assignment: its worker stops there, so the ticket holds no
+ * worker slot, and a new Assignment takes what reaches the ticket after it.
+ */
+export const REPORT_ENDED: readonly string[] = ['reportedBlocked', 'reportedFailed']
+/** Whether a report ended an Assignment, rather than a retry, a restart or the end of the ticket. */
+export const reportEnded = (assignment: Assignment | undefined): boolean =>
+  assignment?.state === 'ended' && REPORT_ENDED.includes(assignment.endedReason ?? '')
 /** The latest report any of a ticket's Assignments made, which is what the ticket last said. */
 export const latestReport = (ticket: Pick<Ticket, 'assignments'>): Assignment['report'] => ticket.assignments.findLast(assignment => assignment.report)?.report
 /**

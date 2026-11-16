@@ -659,6 +659,8 @@ const TEXT = {
   'reason.channelIgnored': ['来源已不再监听这个对话', 'The Source no longer listens to this conversation'],
   'reason.hostRestarted': ['dsh-superagent 重启', 'dsh-superagent restarted'],
   'reason.retried': ['人工重试', 'Retried by a person'],
+  'reason.reportedBlocked': ['worker 报了 blocked，正等待人工', 'The worker reported blocked and waits for a person'],
+  'reason.reportedFailed': ['worker 报了 failed，正等待人工', 'The worker reported failed and waits for a person'],
   'reason.completed': ['已完成', 'Completed'],
   'reason.dropped': ['无需处理，已关闭', 'No action needed; closed'],
   'reason.merged': ['PR 已合并', 'PR merged'],

@@ -4,7 +4,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
+import { key, latestAssignment, latestReport, liveTicket, reportEnded, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
@@ -432,8 +432,11 @@ export class DshExecutor implements Executor {
   activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
   private running(ticket: Ticket): boolean {
-    if (!runningAssignment(ticket)) return false
-    return this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
+    const busy = this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
+    // An ended Assignment holds no slot: that is what frees the slot of a worker that reported blocked or failed.
+    if (runningAssignment(ticket)) return busy
+    // A turn a person typed into the worker's Session is theirs, and holds the slot it runs in though no Assignment runs it.
+    return !!latestAssignment(ticket) && this.personal.has(ticket.id) && busy
   }
   /** Marks a ticket failed after its launch fails; the ticket waits until new human input or an explicit retry arrives. */
   private launchFailed(ticketId: string, assignmentId: string, error: unknown): void {
@@ -510,7 +513,9 @@ export class DshExecutor implements Executor {
       // The turn a stop of the worker's subagents woke and cancelled is no turn of the worker's.
       if (status !== 'idle' || cancelled.delete(agent) || this.host.closing()) return
       const ticket = this.ticketOf(agent)
-      const assignment = ticket && runningAssignment(ticket)
+      // The Assignment that went idle: the running one, or the latest once a report ended it, whose worker still ends its turn.
+      const latest = ticket && latestAssignment(ticket)
+      const assignment = (ticket && runningAssignment(ticket)) ?? (reportEnded(latest) ? latest : undefined)
       if (ticket && assignment && liveTicket(ticket)) void this.background(this.workerIdle(ticket, assignment, agent))
     }))
     // A person's message typed into a worker's Session, which the ticket does not record.
@@ -632,22 +637,25 @@ export class DshExecutor implements Executor {
     if (this.resuming.has(idle.id) || agent.status !== 'idle') return
     // A turn that ended as turns do starts the count of passing failures again.
     this.transient.delete(idle.id)
+    // The Assignment that went idle, which a newer one has not replaced: the running one, or the latest once a report ended
+    // it, since its worker still finishes the turn it reported in.
+    const held = (stored: Ticket) => runningAssignment(stored) ?? latestAssignment(stored)
     // The ticket while the Assignment that went idle runs it.
     const live = () => {
       const stored = this.host.store.tickets.get(ticket.id)
-      return stored && liveTicket(stored) && runningAssignment(stored)?.id === idle.id ? stored : undefined
+      return stored && liveTicket(stored) && held(stored)?.id === idle.id ? stored : undefined
     }
     // A worker whose last word was its result, a question for a person, or a blocked or failed report handed off to a person;
     // an Input delivered after its result or question is new work.
     const handedOff = (stored: Ticket) => {
-      const assignment = runningAssignment(stored), report = assignment?.report
+      const assignment = held(stored), report = assignment?.report
       const since = !!assignment?.deliveredAt && !!report && assignment.deliveredAt >= report.at
       return ((report?.state === 'ready' || !!stored.attention) && !since) || waitsForPerson(stored)
     }
     const before = live()
     if (!before || this.host.closing()) return
     // A turn a person started in the Session is the person's work, which goes on in the background as any turn's does.
-    const report = runningAssignment(before)?.report, person = this.personal.get(ticket.id)
+    const report = held(before)?.report, person = this.personal.get(ticket.id)
     // The worker read what reached it before a turn that ended: one it handed off with, or one whose background work ended.
     if (handedOff(before) && !(report && person && person > report.at)) {
       this.host.engine.turnEnded(ticket.id, idle.id)
