@@ -49,6 +49,11 @@ let guards: Map<string, Guard>
 let restricts: Map<string, unknown[]>
 /** The profile's tools, which the fixture's Sessions inherit; a test adds one as an MCP server would. */
 let inheritedTools: string[]
+/**
+ * Names the registry still lists but no longer answers `get` for, as an unloaded plugin's tools: `restrict` refuses to name
+ * one, so a Session must drop it rather than fail the restriction.
+ */
+let unavailableTools: string[]
 type HttpHandler = (req: unknown, res: unknown) => Promise<void>
 let http: HttpHandler
 async function api(method: string, path: string): Promise<{ status: number; body: unknown }> {
@@ -124,8 +129,19 @@ function feishu(id: string, text: string, overrides: Record<string, unknown> = {
 const worktreeName = 'fix-regression'
 /** The MCP tools the fixture's profile gives every Session, which a Session must keep: as mcp-client names codegraph's one tool. */
 const MCP_TOOLS = ['mcp__codegraph__codegraph_explore']
-/** What a context plugin such as billion-context registers globally: without them on the wire it sees no compress surface. */
+/** The memory plugin's tools, as dsh-mnemon registers them globally: a second class of plugin tool, under a prefix of its own. */
+const MNEMON_TOOLS = ['mnemon_recall', 'mnemon_remember', 'mnemon_status', 'mnemon_memory_bodies', 'mnemon_view_route', 'mnemon_document_search']
+/**
+ * What a context plugin such as billion-context registers globally: without them on the wire it sees no compress surface.
+ */
 const CONTEXT_TOOL_NAMES = ['compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image']
+/**
+ * The profile's tools a Session must never see, whatever a plugin adds: the ones that ask a person, change the profile,
+ * schedule work or start goals outside the worker slots, start or message other Sessions, or edit documents.
+ */
+const FORBIDDEN_TOOLS = ['ask_user_question', 'plugin_manager', 'schedule_create', 'create_goal', 'session_create', 'session_send_message', 'feishu_doc_edit',
+  // The memory plugin registers these under the allowed prefix, but they edit documents, so the class does not carry them.
+  'mnemon_document_create', 'mnemon_document_manage']
 /** Route one decision with the main Session's orchestrator_route, answering its result; a refused one throws its reason. */
 async function route(item: Record<string, unknown>): Promise<Record<string, unknown>> {
   const { results } = await runTool(runtime.masterId, 'orchestrator_route', { decisions: [item] }) as { results: Record<string, unknown>[] }
@@ -167,7 +183,8 @@ beforeEach(async () => {
   // The profile's tools, which every Session inherits; an MCP server adds to it after a Session may already exist.
   inheritedTools = ['bash', 'read', 'read_image', 'skill', 'job_output', 'job_list', 'job_kill', 'grep', 'web_search',
     'ask_user_question', 'plugin_manager', 'schedule_create', 'create_goal', 'session_create', 'session_send_message', 'feishu_doc_edit',
-    ...MCP_TOOLS]
+    ...MCP_TOOLS, ...MNEMON_TOOLS, 'mnemon_document_create', 'mnemon_document_manage']
+  unavailableTools = []
   deliveries = vi.fn()
   controller = {
     create: vi.fn(async ({ sessionId, agentPreset }) => {
@@ -186,8 +203,9 @@ beforeEach(async () => {
           const own = scope === agents.get(sessionId)
           return (scope === preset || own) && inherited.includes(name) || own && name === 'subagent' ? { name } : undefined
         },
-        // The global view as `schemas` reports it: what the profile registered, an MCP server's tools included.
-        schemas: () => inherited.map(name => ({ name })),
+        // The global view as `schemas` reports it: what the profile registered, an MCP server's tools included. A tool
+        // whose plugin went away stays in the schema list while `get` no longer answers for it.
+        schemas: () => [...inherited, ...unavailableTools].map(name => ({ name })),
         restrict: vi.fn((rule: { allow: string[] }) => {
           if (rule.allow.some(name => !inherited.includes(name))) throw new Error('Restriction names a non-inherited tool')
           restricts.set(sessionId, [...restricts.get(sessionId) ?? [], rule]); return () => {}
@@ -1574,11 +1592,20 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session 
   runtime.engine.stopTicket(ticket.id)
   expect(guards.get(sessionId)!()).toBe('Ticket ended; new work needs a new authorized ticket')
   expect(restricts.get(runtime.masterId)).toEqual([{ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill',
-    ...MCP_TOOLS] }])
+    ...MCP_TOOLS, ...MNEMON_TOOLS] }])
   // A worker keeps only the profile's work tools: none that ask a person, change the profile, schedule or start work outside
   // the worker slots, reach other Sessions or edit documents, whenever they were registered.
   expect(restricts.get(sessionId)).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search', 'skill',
-    ...MCP_TOOLS] }])
+    ...MCP_TOOLS, ...MNEMON_TOOLS] }])
+})
+
+it('keeps every forbidden class out of both Sessions, wherever a plugin registered it', async () => {
+  // The profile registers these globally; the memory and MCP prefixes must not become a way to reach them.
+  const { sessionId } = await acceptedTicket()
+  for (const id of [runtime.masterId, sessionId]) {
+    const allow = (restricts.get(id)!.at(-1) as { allow: string[] }).allow
+    expect(allow.filter(name => FORBIDDEN_TOOLS.includes(name)), `${id} allow`).toEqual([])
+  }
 })
 
 it('gives an Executor Session the context-management tools a context plugin registers, in the order the main Session lists them', async () => {
@@ -1591,10 +1618,10 @@ it('gives an Executor Session the context-management tools a context plugin regi
   // A worker that cannot name `compress` leaves the plugin no compress surface on the wire, so it suppresses every nudge and
   // the Session grows past the window and never folds.
   expect(restricts.get(sessionId)).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search',
-    'skill', ...CONTEXT_TOOL_NAMES, ...MCP_TOOLS] }])
+    'skill', ...CONTEXT_TOOL_NAMES, ...MCP_TOOLS, ...MNEMON_TOOLS] }])
   // The main Session keeps the same six, after the tools it already had: its set is the one the change left untouched.
   expect(restricts.get(runtime.masterId)!.at(-1)).toEqual({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill',
-    'compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image', ...MCP_TOOLS] })
+    'compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image', ...MCP_TOOLS, ...MNEMON_TOOLS] })
 })
 
 it('skips a context-management tool the profile does not register, without failing the restriction', async () => {
@@ -1613,12 +1640,40 @@ it('adds an MCP server\'s tools to a Session that was already restricted when th
   inheritedTools.push('mcp__filesystem__read_file')
   await (runtime as unknown as { ctx: Context }).ctx.parallel('tools/change')
   expect(restricts.get(sessionId)!.at(-1)).toEqual({ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search', 'skill',
-    ...MCP_TOOLS, 'mcp__filesystem__read_file'] })
+    ...MCP_TOOLS, ...MNEMON_TOOLS, 'mcp__filesystem__read_file'] })
   expect(restricts.get(runtime.masterId)!.at(-1)).toEqual({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill',
-    ...MCP_TOOLS, 'mcp__filesystem__read_file'] })
+    ...MCP_TOOLS, ...MNEMON_TOOLS, 'mcp__filesystem__read_file'] })
   // The change its own restriction announces must not register another one.
   await (runtime as unknown as { ctx: Context }).ctx.parallel('tools/change')
   expect(restricts.get(sessionId)).toHaveLength(2)
+})
+
+it('gives both Sessions the memory tools a plugin registers after they existed, which no allowlist names', async () => {
+  // The ticket's own case: the profile's memory plugin registered its tools globally, and neither allowlist named one, so
+  // both Sessions saw none of them and no worker ever recorded or recalled anything.
+  const { sessionId } = await acceptedTicket()
+  inheritedTools.push('mnemon_memory_bodies', 'mnemon_view_route')
+  await (runtime as unknown as { ctx: Context }).ctx.parallel('tools/change')
+  for (const id of [runtime.masterId, sessionId]) {
+    const allow = (restricts.get(id)!.at(-1) as { allow: string[] }).allow
+    expect(allow, `${id} allow`).toEqual(expect.arrayContaining(['mnemon_memory_bodies', 'mnemon_view_route']))
+    // The class is allowed whole, so a tool the plugin adds next time needs no edit to this repository.
+    expect(allow.filter(name => name.startsWith('mnemon_'))).toHaveLength(MNEMON_TOOLS.length + 2)
+  }
+})
+
+it('drops a plugin tool the registry still lists but no longer provides, rather than failing the restriction', async () => {
+  // A plugin that unloaded leaves its name in `schemas`; naming it would make `restrict` throw, so the Session drops it.
+  const { sessionId } = await acceptedTicket()
+  // In place: a Session reads the array it was created with, so reassigning would not reach it.
+  inheritedTools.splice(inheritedTools.indexOf('mnemon_recall'), 1)
+  unavailableTools.push('mnemon_recall')
+  await (runtime as unknown as { ctx: Context }).ctx.parallel('tools/change')
+  for (const id of [runtime.masterId, sessionId]) {
+    const allow = (restricts.get(id)!.at(-1) as { allow: string[] }).allow
+    expect(allow, `${id} allow`).not.toContain('mnemon_recall')
+    expect(allow, `${id} allow`).toEqual(expect.arrayContaining(['mnemon_remember', 'mnemon_status']))
+  }
 })
 
 it('gives an explicit ticket\'s worker a prompt without the limits of an inferred Mandate', async () => {
@@ -1773,7 +1828,7 @@ it('gives a subagent of a worker only the worker\'s work tools, and none once th
   child.session.header = { parentSession: sessionId }
   await (runtime as unknown as { ctx: Context }).ctx.parallel('agent/created', { agent: child } as never)
   expect(restricts.get('child-1')).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search', 'skill',
-    ...MCP_TOOLS] }])
+    ...MCP_TOOLS, ...MNEMON_TOOLS] }])
   expect(guards.get('child-1')!()).toBeUndefined()
   runtime.engine.stopTicket(ticket.id)
   expect(guards.get('child-1')!()).toBe('Ticket ended; new work needs a new authorized ticket')
@@ -1796,7 +1851,7 @@ it('gives a subagent of a worker\'s subagent the same work tools and guard', asy
     await created.parallel('agent/created', { agent } as never)
   }
   expect(restricts.get('grandchild-1')).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search', 'skill',
-    ...MCP_TOOLS] }])
+    ...MCP_TOOLS, ...MNEMON_TOOLS] }])
   runtime.engine.stopTicket(ticket.id)
   expect(guards.get('grandchild-1')!()).toBe('Ticket ended; new work needs a new authorized ticket')
 })

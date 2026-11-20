@@ -44,6 +44,21 @@ it('saves team sections and skills as versions that survive a restart, with hist
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
+it('tells a worker to recall before it starts and to record only when the verdict changed, and tells the main Session neither', () => {
+  // The work guide is the worker's own section: the orchestrator assembles `runtime/dispatch` instead.
+  expect(guides.work).toContain('mnemon_recall')
+  expect(guides.work).toContain('mnemon_remember')
+  // One memory per ticket would be noise, so the line names the case that is not a repeat of the report.
+  expect(guides.work).toMatch(/only when the verdict, a conclusion or a pitfall changed/)
+  expect(composePrompt(defaultPrompts(), 'worker')).toContain('mnemon_recall')
+  // The role prompt itself stays under the 1000-character budget `cards.spec.ts` holds it to, so the line lives in the guide.
+  expect(workerPrompt).not.toContain('mnemon_')
+  // The orchestrator assembles `runtime/dispatch` instead, so neither it nor the shared part carries the line.
+  expect(composePrompt(defaultPrompts(), 'orchestrator')).not.toContain('mnemon_')
+  expect(masterPrompt).not.toContain('mnemon_')
+  expect(sharedPrompt).not.toContain('mnemon_')
+})
+
 it('assembles every role from fixed sections around the team sections, whatever the configuration says', () => {
   const config = { communication: 'Say little.', scope: '', delivery: 'Attach screenshots.', skills: {} }
   for (const role of ['orchestrator', 'worker'] as const) {

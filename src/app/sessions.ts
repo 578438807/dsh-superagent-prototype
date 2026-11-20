@@ -68,6 +68,19 @@ const WORK_TOOLS: readonly string[] = ['read', 'write', 'edit', 'read_image', 'g
   'web_search', 'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent',
   ...CONTEXT_TOOLS]
 /**
+ * The classes of tool a plugin registers globally under a prefix, which no list can name in advance: an MCP server's
+ * `mcp__<server>__<tool>`, and the `mnemon_*` memory tools the profile's memory plugin registers. Both are work tools a
+ * Session may use, so the class is named here and the members are read from the registry; naming them one by one would
+ * hide every tool a plugin adds after this file was written.
+ */
+const PLUGIN_PREFIXES: readonly string[] = ['mcp__', 'mnemon_']
+/**
+ * Within one of those classes, the tools that are a forbidden class after all: the memory plugin writes and manages
+ * documents in its own store, which is editing documents, so a Session reads, recalls and records memories but does not
+ * create or manage a document. Searching them reads, so it stays.
+ */
+const PLUGIN_EXCLUDES: readonly string[] = ['mnemon_document_create', 'mnemon_document_manage']
+/**
  * What replaces the AgentTeams captain protocol in an Executor Session's prompt. The profile's text is the captain's: it drives
  * a Web team through agent_teams_* tools that a worker Session does not have, and it names 14 of them. A worker leads its own
  * subagents through spawn_teammate and the team_task_* board, so it keeps the collaboration duties and the tools it holds.
@@ -311,20 +324,22 @@ export class Sessions {
     } catch { return false }
   }
   /**
-   * `allow` plus every MCP tool this DSH has (`mcp__<server>__<tool>`), which no list can name in advance: a server decides its
-   * own tools, registers them globally, and re-registers them when it reconnects. Read from the global view, which no
-   * restriction filters, so the set stays readable while it is restricted; each name is checked once more so a tool that went
-   * away between reading and restricting is dropped rather than making `restrict` throw.
+   * Every plugin tool this DSH has under one of `PLUGIN_PREFIXES` (an MCP server's, the memory plugin's) except the ones
+   * `PLUGIN_EXCLUDES` keeps out, which no list can name in advance: a plugin decides its own tools, registers them
+   * globally, and re-registers them when it reconnects. Read from the global view, which no restriction filters, so the set
+   * stays readable while it is restricted; each name is checked once more so a tool that went away between reading and
+   * restricting is dropped rather than making `restrict` throw.
    */
-  private mcpTools(agent: Agent): string[] {
+  private pluginTools(agent: Agent): string[] {
     try {
       return agent.ctx.tools.schemas().map(schema => schema.name)
-        .filter(name => name.startsWith('mcp__') && agent.ctx.tools.get(name))
+        .filter(name => PLUGIN_PREFIXES.some(prefix => name.startsWith(prefix)) && !PLUGIN_EXCLUDES.includes(name)
+          && agent.ctx.tools.get(name))
     } catch { return [] }
   }
   /**
-   * Restrict `agent` to `allow()` and the MCP tools it has now, keeping that true across the registry changes an MCP server
-   * makes as it connects, reconnects and reloads: each `tools/change` re-applies the restriction when the MCP names differ.
+   * Restrict `agent` to `allow()` and the plugin tools it has now, keeping that true across the registry changes a plugin
+   * makes as it loads, reconnects and reloads: each `tools/change` re-applies the restriction when the plugin names differ.
    * The names are recorded before restricting, so the change that restriction itself announces re-enters and stops at once
    * instead of looping.
    */
@@ -332,7 +347,7 @@ export class Sessions {
     // Undefined, not empty: the first apply must register even an empty `allow`, which restricts every tool away.
     let names: string[] | undefined, dispose = () => {}
     const apply = () => {
-      const before = names, next = [...allow(), ...this.mcpTools(agent)]
+      const before = names, next = [...allow(), ...this.pluginTools(agent)]
       if (before !== undefined && next.length === before.length && next.every((name, at) => name === before[at])) return
       // Recorded before restricting: registering a restriction announces the change that calls this again.
       names = next
@@ -344,7 +359,7 @@ export class Sessions {
       } catch (error) {
         // A tool that went away between reading it and restricting to it: keep the older restriction and try on the next change.
         names = before
-        this.ctx.logger.warn('dsh-superagent could not restrict a Session to its MCP tools: %s', String(error))
+        this.ctx.logger.warn('dsh-superagent could not restrict a Session to its plugin tools: %s', String(error))
       }
     }
     apply()
