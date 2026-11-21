@@ -795,7 +795,9 @@ it('tells a passing failure of the provider or the network from one that a later
   }
   // A provider whose plugin is re-mounted loses its adapter for the length of the window; outside it the same request works.
   for (const error of [Object.assign(new Error('no adapter registered for provider "workbuddy"'), { code: 'NO_ADAPTER' }),
-    new Error('LlmError: no adapter registered for provider "workbuddy"')]) {
+    new Error('LlmError: no adapter registered for provider "workbuddy"'),
+    // The code alone still counts, so a reworded message does not turn this back into a fatal failure.
+    Object.assign(new Error('provider unavailable'), { code: 'NO_ADAPTER' })]) {
     expect(transient(error)).toBe(true)
   }
   for (const error of [Object.assign(new Error('x'), { status: 400 }), Object.assign(new Error('x'), { status: 401 }), new Error('context too long'), 'LlmError: offline']) {
