@@ -21,6 +21,17 @@ function withStore(body: (store: Store, dir: string) => void): void {
   try { body(store, dir) } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
 }
 
+it('tells a worker to recall before it starts and to record only when the verdict changed, and tells the main Session neither', () => {
+  // The memory plugin's tools reach a Session by their class (see sessions.ts), so the instruction is all that makes them used.
+  expect(guides.work).toContain('mnemon_recall')
+  expect(guides.work).toContain('mnemon_remember')
+  expect(guides.work).toMatch(/only when the verdict, a conclusion or a pitfall changed/)
+  const worker = composePrompt(defaultPrompts(), 'worker')
+  expect(worker).toContain('mnemon_recall')
+  // The main Session assembles `dispatch`, not `work`, and it does not do the work that produces a conclusion worth recording.
+  for (const prompt of [composePrompt(defaultPrompts(), 'orchestrator'), masterPrompt, workerPrompt, sharedPrompt]) expect(prompt).not.toContain('mnemon_')
+})
+
 it('saves team sections and skills as versions that survive a restart, with history and rollback', () => {
   const dir = mkdtempSync(join(tmpdir(), 'prompt-config-'))
   let store = new Store(join(dir, 'db'))
