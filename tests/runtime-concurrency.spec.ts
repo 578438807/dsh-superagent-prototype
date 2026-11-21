@@ -816,11 +816,20 @@ it('lets a worker go on after the adapter of its provider is missing, but fails 
     .filter(call => call.sessionId === one.sessionId && call.text.includes('Your last turn failed for a passing reason'))
   expect(retold()).toHaveLength(1)
   expect(latestAssignment(ticket())?.report).toBeUndefined()
-  // A missing adapter that does not come back is bounded like any other passing failure: three retries, then the ticket fails.
-  fail(); fail(); fail()
+  // A missing adapter that does not come back is bounded like any other passing failure: three tries, 15 + 30 + 60 s of
+  // backoff, then the ticket fails and nothing is retried again however long the window stays open.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    for (const [index, wait] of [30_000, 60_000].entries()) {
+      fail(); await vi.advanceTimersByTimeAsync(wait)
+      expect(retold()).toHaveLength(index + 2)
+    }
+    fail()
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+  } finally { vi.useRealTimers() }
   await vi.waitFor(() => expect(latestAssignment(ticket())?.report)
     .toMatchObject({ state: 'failed', summary: expect.stringContaining('no adapter registered') }))
-  expect(retold()).toHaveLength(1)
+  expect(retold()).toHaveLength(3)
 })
 it('runs the assignment to its report when the adapter of its provider comes back during the retry', async () => {
   const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
