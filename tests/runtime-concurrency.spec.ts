@@ -822,6 +822,21 @@ it('lets a worker go on after the adapter of its provider is missing, but fails 
     .toMatchObject({ state: 'failed', summary: expect.stringContaining('no adapter registered') }))
   expect(retold()).toHaveLength(1)
 })
+it('runs the assignment to its report when the adapter of its provider comes back during the retry', async () => {
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const ticket = () => h.runtime.store.tickets.get(one.ticket.id)!
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    h.ctx.emit('agent/error', { agent: h.agents.get(one.sessionId), turn: 1, step: 1,
+      error: Object.assign(new Error('no adapter registered for provider "workbuddy"'), { code: 'NO_ADAPTER' }) } as never)
+    await vi.advanceTimersByTimeAsync(15_000)
+  } finally { vi.useRealTimers() }
+  // The window is over, so the same request the adapter answers now goes through and the turn finishes normally.
+  expect(ticket().ended).toBeUndefined()
+  expect(latestAssignment(ticket())?.report).toBeUndefined()
+  await h.runTool(one.sessionId, 'orchestrator_report', { state: 'ready', summary: 'PR ready' }); await h.runtime.idle()
+  expect(latestAssignment(ticket())?.report).toMatchObject({ state: 'ready', summary: 'PR ready' })
+})
 it('reports a worker waiting when its turn ends after a person answered its blocked report', async () => {
   const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
   await h.runTool(one.sessionId, 'orchestrator_report', { state: 'blocked', summary: 'Which color?' })
