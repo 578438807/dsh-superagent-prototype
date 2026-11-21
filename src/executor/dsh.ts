@@ -48,9 +48,12 @@ class PrepareFailed extends Error {}
  * Outside the window the same request succeeds, so a ticket that stops here is killed by a fault that was already over —
  * the backoff below (15 s, then 30 s, then 60 s) outlasts the window. Every other code stays fatal at once, and the
  * retry count stays bounded by `TRANSIENT_TRIES`.
+ *
+ * Both halves of that error are named: the message text (`no adapter registered`) and the code (`NO_ADAPTER`), so a
+ * change of wording on either side does not quietly turn this back into a fatal failure.
  */
 const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
-  'network error', 'overloaded', 'rate limit', 'no adapter registered', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
+  'network error', 'overloaded', 'rate limit', 'no adapter registered', 'NO_ADAPTER', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
 /**
  * True when an error represents a transient network or model-provider failure: an HTTP 408, 429, or 5xx status, a
  * connection that was refused, reset, timed out, or could not resolve its host, or a provider whose adapter is missing
