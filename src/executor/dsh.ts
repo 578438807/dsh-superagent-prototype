@@ -41,11 +41,20 @@ const fromPerson = (input?: TicketInput): boolean => input?.kind === 'trigger' ?
  * DshExecutor catches it to mark the ticket failed immediately rather than retrying automatically, because an existing directory counts as prepared and an automatic retry would treat whatever a failed prepare command left behind in the directory as a prepared workspace.
  */
 class PrepareFailed extends Error {}
-const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
-  'network error', 'overloaded', 'rate limit', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
 /**
- * True when an error represents a transient network or model-provider failure: an HTTP 408, 429, or 5xx status, or a
- * connection that was refused, reset, timed out, or could not resolve its host.
+ * `no adapter registered` is the one provider error whose cause is outside the model: a plugin that registers an adapter
+ * is re-mounted while the host runs, the adapter registry loses that provider for the length of the window (measured
+ * 9.5 s for `dsh-workbuddy-bridge`), and every request made inside it throws `LlmError ... NO_ADAPTER` deterministically.
+ * Outside the window the same request succeeds, so a ticket that stops here is killed by a fault that was already over —
+ * the backoff below (15 s, then 30 s, then 60 s) outlasts the window. Every other code stays fatal at once, and the
+ * retry count stays bounded by `TRANSIENT_TRIES`.
+ */
+const PASSING = new RegExp(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'UND_ERR', 'socket hang up', 'fetch failed',
+  'network error', 'overloaded', 'rate limit', 'no adapter registered', '\\b(?:408|429|50[0-4])\\b'].join('|'), 'i')
+/**
+ * True when an error represents a transient network or model-provider failure: an HTTP 408, 429, or 5xx status, a
+ * connection that was refused, reset, timed out, or could not resolve its host, or a provider whose adapter is missing
+ * because its owning plugin is being re-mounted (`PASSING` says why that one belongs here).
  */
 export function transient(error: unknown): boolean {
   const status = (error as { status?: unknown } | undefined)?.status
