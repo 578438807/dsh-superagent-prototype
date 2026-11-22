@@ -60,6 +60,18 @@ declare module '@deepseek-ai/cordis' {
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+/**
+ * The tool classes a Session also gets, whoever registered them: an MCP server's tools and the memory plugin's. They are
+ * classes rather than members, so a plugin that adds a tool after this file was written still reaches a Session, and no
+ * allowlist literal has to name it. Naming members one by one is what hid every `mnemon_*` tool: it was installed,
+ * loaded and registered, and neither Session could see it.
+ */
+const PLUGIN_PREFIXES: readonly string[] = ['mcp__', 'mnemon_']
+/**
+ * The members of an allowed class that are still not work tools: the memory plugin's document writers and managers edit
+ * documents, which `WORK_TOOLS` names as forbidden. Its search, which only reads, stays allowed.
+ */
+const PLUGIN_EXCLUDES: readonly string[] = ['mnemon_document_create', 'mnemon_document_manage']
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -260,12 +272,52 @@ export class Sessions {
     const register = this.registerTool(agent, binding)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
+      binding.disposers.push(this.restrictTools(agent, () => ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill']
+        .filter(name => agent.ctx.tools.get(name))),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
       binding.disposers.push(...this.workOnly(agent, ticket!.id))
     }
+  }
+  /**
+   * The tools of a plugin class a Session works with, read from the profile's registry: an MCP server's tools and the
+   * memory plugin's, less the members `PLUGIN_EXCLUDES` names. `get` is asked too, because the registry may still list a
+   * tool whose plugin has unloaded, and naming that one makes `restrict` throw instead of dropping it.
+   */
+  private pluginTools(agent: Agent): string[] {
+    try {
+      return agent.ctx.tools.schemas().map(schema => schema.name)
+        .filter(name => PLUGIN_PREFIXES.some(prefix => name.startsWith(prefix)) && !PLUGIN_EXCLUDES.includes(name) && agent.ctx.tools.get(name))
+    } catch { return [] }
+  }
+  /**
+   * Restricts a Session to `allow` plus its plugin class's tools, and again whenever the profile's tools change, so a
+   * plugin that loads after the Session existed still reaches it. The names are recorded before restricting, so the
+   * change that restriction itself announces re-enters and stops at once instead of looping.
+   */
+  private restrictTools(agent: Agent, allow: () => string[]): () => void {
+    // Undefined, not empty: the first apply must register even an empty `allow`, which restricts every tool away.
+    let names: string[] | undefined, dispose = () => {}
+    const apply = () => {
+      const before = names, next = [...allow(), ...this.pluginTools(agent)]
+      if (before !== undefined && next.length === before.length && next.every((name, at) => name === before[at])) return
+      // Recorded before restricting: registering a restriction announces the change that calls this again.
+      names = next
+      try {
+        // The new restriction goes on before the older one comes off, so no call in between runs unmasked.
+        const fresh = agent.ctx.tools.restrict({ allow: next })
+        dispose()
+        dispose = fresh
+      } catch (error) {
+        // A tool that went away between reading it and restricting to it: keep the older restriction and try on the next change.
+        names = before
+        this.ctx.logger.warn('dsh-superagent could not restrict a Session to its plugin tools: %s', String(error))
+      }
+    }
+    apply()
+    const off = this.ctx.on('tools/change', apply)
+    return () => { off(); dispose() }
   }
   /**
    * Whether a Session runs the router preset: as DSH's preset registry last selected it, read through the session projection
@@ -289,8 +341,7 @@ export class Sessions {
   private workOnly(agent: Agent, ticketId: string): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
-    const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
-    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+    return [this.restrictTools(agent, () => WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))), agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
     })]

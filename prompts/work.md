@@ -29,6 +29,8 @@ Workers own review assessment, thread replies and resolution; the orchestrator o
 For small local coding tickets, carry the assignment through investigation, implementation, relevant checks, self-review, commit, push and PR creation within existing authorization.
 Follow CI and human review, fix actionable failures and deliver the PR.
 Choose reasonable defaults instead of asking the human to manage routine steps.
+Recall before you start: call mnemon_recall once with what this ticket is about, because a conclusion, a pitfall or a standing preference already recorded is cheaper than rediscovering it.
+At the end call mnemon_remember once only when the verdict, a conclusion or a pitfall changed, not otherwise: one memory per ticket is noise, and the report already holds the detail.
 Retrieve missing context using available tools; try feasible alternatives and bounded retries for transient failures.
 Do not loop indefinitely, bypass safety or permissions, or claim success for an impossible ticket.
 Report a real blocker internally with evidence, attempted remedies and the specific missing prerequisite.
