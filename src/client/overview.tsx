@@ -1,12 +1,12 @@
 /** Overview page: pending Tickets requiring human action, active system problems, 24-hour flow counts, and Executor load. */
 import type { ReactNode } from 'react'
 import { usePoll, type Problem } from './api.ts'
-import { Button, Icon } from './controls.tsx'
+import { Button, Icon, StateDot } from './controls.tsx'
 import { useAction, usePanel, usePanelData } from './provider.tsx'
 import { setupPage, settingsRoute, type Route } from './route.ts'
 import { TicketLine } from './rows.tsx'
 import { healthText, localized, reasonLabel, valueLabel, readableMarkers } from './text.ts'
-import { CheckSetupButton, ConfirmButton, Hint, LoadState, Section, SetupMessage } from './widgets.tsx'
+import { CheckSetupButton, ConfirmButton, Hint, KeyValues, LoadState, Section, SetupMessage } from './widgets.tsx'
 
 function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () => Promise<void> }) {
   const { t, call, navigate } = usePanel()
@@ -58,6 +58,59 @@ function ProblemLine({ problem, onChanged }: { problem: Problem; onChanged: () =
   }
 }
 
+/** Format a token count the way the proxy's own panel does, so both read the same at a glance. */
+function compact(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—'
+  const size = Math.abs(value)
+  return size >= 1_000_000 ? `${(value / 1_000_000).toFixed(2)}M` : size >= 10_000 ? `${Math.round(value / 1000)}k` : `${value}`
+}
+
+/**
+ * How long this Session's context lasts under the long-lived context mechanism: what it holds now, the window bili allows,
+ * the line the over-alert script mails at, and the requests left at the measured growth. The numbers come from
+ * `GET context`, which reads them from the running proxy rather than restating any threshold here.
+ */
+function ContextLifespan() {
+  const { t, call } = usePanel()
+  // The window changes only when the proxy restarts, and the usage on each model request; ten seconds is close enough.
+  const { data, error } = usePoll(() => call('GET context'), [], 10_000)
+  // A Host that has not loaded the route yet answers 404, which is not something to show as an error: the poll retries,
+  // and the Section fills itself in once the Host serves it.
+  if (!data) return <Section title={t('ctxTitle')}><Hint>{error ? t('ctxUnavailable') : t('loading')}</Hint></Section>
+  if (!data.ok) return <Section title={t('ctxTitle')}>
+    <Hint>{t(data.problem === 'proxyOffline' ? 'ctxProxyOffline' : 'ctxNoSession')}</Hint>
+  </Section>
+  const used = data.sessionTokens ?? 0
+  const pct = data.window > 0 ? Math.min(100, Math.round(used / data.window * 100)) : 0
+  const lineAt = data.window > 0 ? Math.min(100, Math.round(data.warnLine / data.window * 100)) : 0
+  const state = used >= data.warnLine ? 'error' : used >= data.warnLine * 0.9 ? 'warning' : undefined
+  const rounds = data.roundsToWarn === null ? t('ctxRoundsUnknown') : t('ctxRounds', { count: String(data.roundsToWarn) })
+  return <Section title={t('ctxTitle')} hint={t('ctxHint')} badge={state && <StateDot state={state} />}>
+    {/* The bar fills to the usage and its marker sits on the over-alert line, so the gap between them is the room left. */}
+    <div className="dt-meter" data-state={state} role="img" aria-label={t('ctxBarLabel', { used: `${pct}%`, line: `${lineAt}%` })}>
+      <span className="dt-meter-fill" style={{ width: `${pct}%` }} />
+      <span className="dt-meter-line" style={{ left: `${lineAt}%` }} />
+    </div>
+    <div className="dt-stats">
+      <span className="dt-stat"><span className="dt-stat-label">{t('ctxUsed')}</span>
+        <span className="dt-stat-value">{compact(used)} / {compact(data.window)}</span></span>
+      <span className="dt-stat"><span className="dt-stat-label">{t('ctxLine')}</span>
+        <span className="dt-stat-value">{compact(data.warnLine)}</span></span>
+      <span className="dt-stat"><span className="dt-stat-label">{t('ctxRoomToLine')}</span>
+        <span className="dt-stat-value">{compact(data.roomToWarn)}</span></span>
+      <span className="dt-stat"><span className="dt-stat-label">{t('ctxRoundsLabel')}</span>
+        <span className="dt-stat-value">{rounds}</span></span>
+    </div>
+    <KeyValues rows={[
+      [t('ctxSent'), `${compact(data.sentTokens)}${data.sentTokens === null ? '' : ` · ${t('ctxSentHint')}`}`],
+      [t('ctxGrowth'), compact(data.growth)],
+      [t('ctxFoldStep'), data.foldStep === null ? '—' : compact(data.foldStep)],
+      ...data.perRequest === null ? [] : [[t('ctxPerRequest'), `${compact(Math.round(data.perRequest))} × ${data.samples}`] as [string, string]],
+    ]} />
+    {data.measured === 'estimate' && <Hint>{t('ctxEstimate')}</Hint>}
+  </Section>
+}
+
 export function OverviewPage() {
   const { t, call, navigate } = usePanel()
   const { setup } = usePanelData()
@@ -72,6 +125,7 @@ export function OverviewPage() {
     onClick={() => navigate(route)}>{t('details')}</button>
   return <>
     {error && <LoadState error={error} loading={false} />}
+    <ContextLifespan />
     <Section title={t('pendingTickets')} count={data.person.length}>
       {data.person.length ? <ul className="dt-list dt-cards">{data.person.map(ticket => <TicketLine key={ticket.id} ticket={ticket} question
         onChanged={reload} />)}</ul>
