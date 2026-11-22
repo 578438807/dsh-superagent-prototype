@@ -793,9 +793,58 @@ it('tells a passing failure of the provider or the network from one that a later
     Object.assign(new Error('connect'), { code: 'ECONNRESET' }), new TypeError('fetch failed'), new Error('getaddrinfo EAI_AGAIN api.example.com')]) {
     expect(transient(error)).toBe(true)
   }
+  // A provider whose plugin is re-mounted loses its adapter for the length of the window; outside it the same request works.
+  for (const error of [Object.assign(new Error('no adapter registered for provider "workbuddy"'), { code: 'NO_ADAPTER' }),
+    new Error('LlmError: no adapter registered for provider "workbuddy"'),
+    // The code alone still counts, so a reworded message does not turn this back into a fatal failure.
+    Object.assign(new Error('provider unavailable'), { code: 'NO_ADAPTER' })]) {
+    expect(transient(error)).toBe(true)
+  }
   for (const error of [Object.assign(new Error('x'), { status: 400 }), Object.assign(new Error('x'), { status: 401 }), new Error('context too long'), 'LlmError: offline']) {
     expect(transient(error)).toBe(false)
   }
+})
+it('lets a worker go on after the adapter of its provider is missing, but fails the ticket when it stays missing', async () => {
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const ticket = () => h.runtime.store.tickets.get(one.ticket.id)!
+  const fail = () => { h.ctx.emit('agent/error', {
+    agent: h.agents.get(one.sessionId), turn: 1, step: 1,
+    error: Object.assign(new Error('no adapter registered for provider "workbuddy"'), { code: 'NO_ADAPTER' }) } as never) }
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try { fail(); await vi.advanceTimersByTimeAsync(15_000) } finally { vi.useRealTimers() }
+  const retold = () => h.deliveries.mock.calls.map(([call]) => call)
+    .filter(call => call.sessionId === one.sessionId && call.text.includes('Your last turn failed for a passing reason'))
+  expect(retold()).toHaveLength(1)
+  expect(latestAssignment(ticket())?.report).toBeUndefined()
+  // A missing adapter that does not come back is bounded like any other passing failure: three tries, 15 + 30 + 60 s of
+  // backoff, then the ticket fails and nothing is retried again however long the window stays open.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    for (const [index, wait] of [30_000, 60_000].entries()) {
+      fail(); await vi.advanceTimersByTimeAsync(wait)
+      expect(retold()).toHaveLength(index + 2)
+    }
+    fail()
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+  } finally { vi.useRealTimers() }
+  await vi.waitFor(() => expect(latestAssignment(ticket())?.report)
+    .toMatchObject({ state: 'failed', summary: expect.stringContaining('no adapter registered') }))
+  expect(retold()).toHaveLength(3)
+})
+it('runs the assignment to its report when the adapter of its provider comes back during the retry', async () => {
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const ticket = () => h.runtime.store.tickets.get(one.ticket.id)!
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    h.ctx.emit('agent/error', { agent: h.agents.get(one.sessionId), turn: 1, step: 1,
+      error: Object.assign(new Error('no adapter registered for provider "workbuddy"'), { code: 'NO_ADAPTER' }) } as never)
+    await vi.advanceTimersByTimeAsync(15_000)
+  } finally { vi.useRealTimers() }
+  // The window is over, so the same request the adapter answers now goes through and the turn finishes normally.
+  expect(ticket().ended).toBeUndefined()
+  expect(latestAssignment(ticket())?.report).toBeUndefined()
+  await h.runTool(one.sessionId, 'orchestrator_report', { state: 'ready', summary: 'PR ready' }); await h.runtime.idle()
+  expect(latestAssignment(ticket())?.report).toMatchObject({ state: 'ready', summary: 'PR ready' })
 })
 it('reports a worker waiting when its turn ends after a person answered its blocked report', async () => {
   const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
