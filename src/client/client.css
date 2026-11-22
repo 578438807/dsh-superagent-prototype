@@ -298,6 +298,11 @@ div.dt-preview-head { color: var(--dsw-alias-label-secondary); }
 .dt-stat { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--dsw-alias-label-caption); }
 .dt-stat-value { font-size: 14px; font-weight: 500; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }
 .dt-more-link { font-size: 12px; font-weight: 400; }
+.dt-meter { position: relative; height: 8px; border-radius: 4px; background: var(--dsw-alias-bg-module-platform); overflow: hidden; }
+.dt-meter-fill { display: block; height: 100%; border-radius: 4px; background: var(--dsw-alias-brand-primary); }
+.dt-meter[data-state='warning'] .dt-meter-fill { background: var(--dsw-alias-state-warn-primary); }
+.dt-meter[data-state='error'] .dt-meter-fill { background: var(--dsw-alias-state-error-primary); }
+.dt-meter-line { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--dsw-alias-label-primary); opacity: 0.65; }
 .dt-settings { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 24px; align-items: start; }
 .dt-settings-nav { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; }
 .dt-settings-link { padding: 6px 10px; border: 0; border-radius: 8px; background: none; color: var(--dsw-alias-label-secondary); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }

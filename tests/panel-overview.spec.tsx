@@ -10,7 +10,8 @@ it('leads the overview with the pending Tickets, then problems, the last day and
   await mount()
   expect(tab(zh['tab.overview']).getAttribute('aria-selected')).toBe('true')
   expect(all('[role="tab"]').map(tab => tab.textContent)).toEqual(['概览', '来源', '触发', '评估', '执行', '设置'])
-  expect(all('.dt-section-title').map(title => title.textContent)).toEqual(['待处理工单2', '系统问题2', '过去 24 小时详情 ›', '执行器详情 ›'])
+  expect(all('.dt-section-title').map(title => title.textContent)).toEqual([zh.ctxTitle, '待处理工单2', '系统问题2', '过去 24 小时详情 ›',
+    '执行器详情 ›'])
   expect(all('.dt-cards .dt-ticket-stage').map(item => item.textContent)).toEqual(['待回答', '待处理失败'])
   expect(all('.dt-cards .dt-att-what').map(item => item.textContent)).toEqual(['飞书 来源异常', '评估未完成：这个文案好奇怪'])
   // Actions sit below the title and Threads, apart from the stage, each with its icon.
@@ -18,7 +19,8 @@ it('leads the overview with the pending Tickets, then problems, the last day and
     && [...row.querySelectorAll('.dt-ticket-actions button, .dt-ticket-actions a')].every(action => action.querySelector('svg')))).toBe(true)
   expect(text()).toContain('来源会在每次轮询时自动重试')
   expect(text()).toContain('需要确认按钮颜色')
-  expect(all('.dt-stat').map(stat => stat.textContent)).toEqual(['到达12', '被过滤2', '已评估5', '接单或续做1', '执行中2 / 3', '排队0', '等待新触发1'])
+  expect(all('.dt-stat').map(stat => stat.textContent).slice(4)).toEqual(['到达12', '被过滤2', '已评估5', '接单或续做1', '执行中2 / 3', '排队0',
+    '等待新触发1'])
   expect(all('.dt-chip').map(chip => chip.textContent)[0]).toBe('GitHub#42CI 失败1')
   expect(document.querySelector('.dt-chip-problem')?.textContent).toBe('CI 失败1')
   expect(document.querySelector<HTMLAnchorElement>('a.dt-chip-link')?.href).toBe('https://github.com/acme/widgets/pull/42')
@@ -123,9 +125,45 @@ it('words a refused retry in the interface language by its code', async () => {
   expect(text()).not.toContain('Only an open ticket can be retried, and only when its worker last reported failed or blocked and no person has sent a message since, or when delivering an Input to its worker failed')
 })
 
+it('shows how long the orchestrator Session lasts: used against the window, the over-alert line, and the requests left', async () => {
+  await mount()
+  const section = document.querySelectorAll('.dt-section')[0]!
+  expect(section.querySelector('.dt-section-name')?.textContent).toBe(zh.ctxTitle)
+  expect([...section.querySelectorAll('.dt-stat')].map(stat => stat.textContent)).toEqual([`${zh.ctxUsed}225k / 900k`,
+    `${zh.ctxLine}630k`, `${zh.ctxRoomToLine}405k`, `${zh.ctxRoundsLabel}${zh.ctxRounds.replace('{count}', '33')}`])
+  // The bar fills to the usage and its marker sits on the over-alert line, so the gap between them is the room left.
+  expect(section.querySelector<HTMLElement>('.dt-meter-fill')?.style.width).toBe('25%')
+  expect(section.querySelector<HTMLElement>('.dt-meter-line')?.style.left).toBe('70%')
+  expect(section.querySelector('.dt-meter')?.getAttribute('data-state')).toBeNull()
+  expect(text()).toContain(`${zh.ctxSent}201k · ${zh.ctxSentHint}`)
+  expect(text()).toContain(`${zh.ctxPerRequest}12k × 5`)
+  // An estimated usage is not a measurement, and the panel says so rather than letting it pass as one.
+  expect(text()).not.toContain(zh.ctxEstimate)
+  server.context = { ...server.context, measured: 'estimate' }
+  await remount()
+  expect(text()).toContain(zh.ctxEstimate)
+})
+
+it('warns as the Session nears its over-alert line, and names the reason when there is nothing to measure', async () => {
+  // Nine tenths of the line is the warning the panel shows before it is crossed.
+  server.context = { ...server.context, sessionTokens: 570_000, roomToWarn: 60_000 }
+  await mount()
+  expect(document.querySelector('.dt-meter')?.getAttribute('data-state')).toBe('warning')
+  server.context = { ...server.context, sessionTokens: 640_000, roomToWarn: -10_000 }
+  await remount()
+  expect(document.querySelector('.dt-meter')?.getAttribute('data-state')).toBe('error')
+  server.context = { ...server.context, ok: false, problem: 'proxyOffline', sessionTokens: null }
+  await remount()
+  expect(document.querySelector('.dt-meter')).toBeNull()
+  expect(text()).toContain(zh.ctxProxyOffline)
+  server.context = { ...server.context, problem: 'sessionUnknown' }
+  await remount()
+  expect(text()).toContain(zh.ctxNoSession)
+})
+
 it('shows the overview in English', async () => {
   await mount(en)
-  expect(all('.dt-section-title').map(title => title.textContent)).toEqual([`${en.pendingTickets}2`, `${en.problems}2`,
+  expect(all('.dt-section-title').map(title => title.textContent)).toEqual([`${en.ctxTitle}`, `${en.pendingTickets}2`, `${en.problems}2`,
     `${en.lastDay}${en.details}`, `${en['term.executor']}${en.details}`])
   expect(all('.dt-cards .dt-ticket-stage').map(item => item.textContent)).toEqual([en['stage.answer'], en['stage.failed']])
   expect(all('.dt-stat-label').map(label => label.textContent)).toEqual([en.flowReceivedLabel, en.flowFilteredLabel, en.flowJudgedLabel,
