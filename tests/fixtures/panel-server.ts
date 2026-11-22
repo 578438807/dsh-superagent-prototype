@@ -12,6 +12,7 @@ import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, Source
   ThreadRow, TicketPageView,
   TicketRow, TicketStage,
   TriggerRow } from '../../src/client/api.ts'
+import type { ContextLifespanView } from '../../src/app/context-lifespan.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
@@ -108,6 +109,8 @@ export interface PanelServer {
   opened: string[]
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
+  /** The orchestrator Session's context longevity; a test overrides it to show a Session near its over-alert line. */
+  context: ContextLifespanView
 }
 export let server: PanelServer
 
@@ -163,6 +166,7 @@ const stateView = (): StateView => ({
   // The panel does not read health; the service script does.
   health: {},
 })
+const contextView = (): ApiResponse<'GET context'> => server.context
 const settingsView = (): ApiResponse<'GET settings'> => ({
   policyVersion: 'abcdef1234567890',
   blocks: { policy: { value: server.settings.policy, revision: server.revisions.policy ?? 0 },
@@ -248,6 +252,10 @@ function initial(): PanelServer {
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
     health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
+    // A Session well below its over-alert line, with a measured slope, so the panel shows every number it can.
+    context: { ok: true, session: 'master', model: 'deepseek-v4.1-flash', measured: 'usage', window: 900_000, warnLine: 630_000,
+      foldStep: 30_000, sessionTokens: 225_379, sentTokens: 201_450, growth: 674, roomToWarn: 404_621, roomToWindow: 674_621,
+      perRequest: 12_000, roundsToWarn: 33, samples: 5, at: '2026-11-22T04:50:00Z' },
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -292,6 +300,7 @@ const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
 const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
+  'GET context': { answer: contextView },
   'GET overview': { answer: overviewView },
   'GET search': { query: ['q'], answer: async ({ query }) => {
     const q = query.q ?? ''
