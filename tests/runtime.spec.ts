@@ -553,17 +553,26 @@ it('keeps Issue Triggers stored before Issues arrived through notifications read
 
 it('relaunches running assignments after a restart with a recovery note', async () => {
   const { ticket } = await acceptedTicket()
+  // A restart of DSH leaves no worker Session behind for this process to go on running.
+  const agent = agents.get(`worker-${ticket.id}`)!
+  agent.cancel.mockClear()
+  agents.delete(`worker-${ticket.id}`)
   runtime.executor.resume()
   const recovered = runtime.store.tickets.get(ticket.id)!
   expect(recovered.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
   expect(recovered.inputs).toEqual([expect.objectContaining({ kind: 'text', text: expect.stringContaining('host restarted') })])
+  // A Session that is gone has no inbox to keep, so nothing may try to preserve one.
+  expect(agent.cancel.mock.calls.filter(call => (call[1] as { keepInbox?: boolean })?.keepInbox)).toEqual([])
   deliveries.mockClear()
   await runtime.pump()
   await runtime.idle()
-  expect(runtime.store.tickets.get(ticket.id)!.assignments[1]).toMatchObject({ state: 'running' })
-  // The new Assignment's message says only what is new, as the Session holds the first; the launch's own pass delivers the
-  // recovery note as it reads.
-  expect(relays(`worker-${ticket.id}`)).toEqual([{ ticket_id: ticket.id, assignment: 2 }, { text: expect.stringContaining('host restarted') }])
+  const restart = runtime.store.tickets.get(ticket.id)!
+  expect(restart.assignments).toEqual([expect.objectContaining({ state: 'ended' }), expect.objectContaining({ state: 'running', startedAt: expect.any(String) })])
+  // The harness keeps the Session across a restart, so the new Assignment's message is the first one it reads again; a
+  // Session DSH loads fresh would hold the first, and the message would say only what is new. The launch's own pass delivers
+  // the recovery note as it reads.
+  expect(relays(`worker-${ticket.id}`)).toEqual([{ ticket_id: ticket.id, title: ticket.title, trigger: expect.objectContaining({ text: '@bot 修一下回归' }) },
+    { text: expect.stringContaining('host restarted') }])
 })
 
 it('projects read models for the management page and removes thread subscriptions from the Web surface', async () => {
@@ -837,6 +846,8 @@ it('leaves waiting and blocked assignments alone after a restart and keeps block
   expect(waitsForPerson(runtime.store.tickets.get(ticket.id)!)).toBe(true)
   const other = await acceptedTicket(feishu('12', '@bot 另一个', { root_id: undefined }))
   await runTool(other.sessionId, 'orchestrator_report', { state: 'progress', summary: 'midway' })
+  // The harness keeps its Sessions across a restart, as DSH would after a crash that left them loaded.
+  agents.delete(other.sessionId)
   runtime.executor.resume()
   expect(runtime.store.tickets.get(other.ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'pending'])
 })
@@ -1865,6 +1876,8 @@ it('gives the Assignment a restart starts the messages the replaced one had deli
   expect(sent()).toBe(1)
   const inbox = (agents.get(sessionId)! as unknown as { inbox: { nextTurn: unknown[]; nextStep: unknown[] } }).inbox
   inbox.nextTurn.length = 0; inbox.nextStep.length = 0
+  // A restart of the process leaves no Session of its own loaded, whatever this harness kept.
+  agents.delete(sessionId)
   const next = await restart()
   await next.ready; await next.idle()
   expect(next.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'running'])
