@@ -594,13 +594,35 @@ describe('a worker whose work runs in the background', () => {
     await vi.waitFor(() => expect(h.subagents.service.drainChildren).toHaveBeenCalled())
     await vi.waitFor(() => expect(other.cancel.mock.invocationCallOrder.at(-1)).toBeGreaterThan(h.subagents.service.drainChildren.mock.invocationCallOrder.at(-1)!))
   })
-  it('stops the jobs and the turn of a worker a restart in this process left running, before its Assignment starts again', async () => {
+  it('leaves the worker a reload of the bundle leaves running alone, jobs and turn', async () => {
     const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
-    const job = h.jobs.run(one.sessionId)
+    // A reload of the bundle remounts the plugins while the worker goes on, idle between steps.
+    const agent = h.agents.get(one.sessionId)!
+    agent.status = 'idle'
+    h.jobs.run(one.sessionId)
     h.runtime.executor.resume()
-    expect(h.agents.get(one.sessionId)!.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(agent.cancel).not.toHaveBeenCalled()
+    expect(h.jobs.service.kill).not.toHaveBeenCalled()
+    expect(h.runtime.store.tickets.get(one.ticket.id)!.assignments.map(item => item.state)).toEqual(['running'])
+  })
+  it('stops the jobs and the turn of a worker a restart in this process left idle, before its Assignment starts again', async () => {
+    const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+    // The process dies, leaving the worker's Session, its turn and its background work behind.
+    const agent = h.agents.get(one.sessionId)!
+    agent.status = 'idle'
+    const job = h.jobs.run(one.sessionId)
+    h.agents.delete(one.sessionId)
+    h.runtime.executor.resume()
     await vi.waitFor(() => expect(h.jobs.service.kill).toHaveBeenCalledWith(job, one.sessionId, expect.any(String)))
+    expect(agent.cancel.mock.calls.filter(call => (call[1] as { keepInbox?: boolean })?.keepInbox)).toEqual([])
     expect(h.runtime.store.tickets.get(one.ticket.id)!.inputs).toEqual([expect.objectContaining({ kind: 'text', text: expect.stringContaining('host restarted') })])
+  })
+  it('stops the jobs and the turn of a worker whose Session is gone, before its Assignment starts again', async () => {
+    const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+    h.agents.delete(one.sessionId)
+    h.runtime.executor.resume()
+    await vi.waitFor(() => expect(h.runtime.store.tickets.get(one.ticket.id)!.inputs).toEqual([expect.objectContaining({ kind: 'text', text: expect.stringContaining('host restarted') })]))
   })
   it('stops a ticket whose worker Session was never created without a health error, and goes on past a failing kill', async () => {
     const settings = h.runtime.store.settings()
@@ -678,14 +700,17 @@ describe('what a worker read', () => {
     h.claim(one.sessionId); await h.runtime.idle(); await later()
     expect(input().readAt).toBe(null)
   })
-  it('keeps a note waiting in a worker\'s Session across an in-process restart, for the next Assignment\'s first step', async () => {
+  it('keeps a note waiting in a worker\'s Session across a restart, for the next Assignment\'s first step', async () => {
     const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
     h.runtime.engine.note(one.ticket.id, 'Ticket B changes the same page.'); await h.runtime.idle()
     const copies = () => h.deliveries.mock.calls.filter(([call]) => call.sessionId === one.sessionId && call.text.includes('Ticket B changes the same page.'))
     await vi.waitFor(() => expect(copies()).toHaveLength(1))
     const claimed: string[] = []
     h.ctx.on('agent/inbox/claimed', ({ message }) => { claimed.push(message.id) })
-    // The restart cancels the worker's turn and keeps its inbox, where the note waits.
+    // The process dies with the note waiting in the worker's inbox; the launch that loads the Session again delivers it.
+    const agent = h.agents.get(one.sessionId)!
+    h.agents.delete(one.sessionId); agent.status = 'idle'
+    h.controller.resolveAgent.mockImplementation(async (id: string) => { if (id === one.sessionId) h.agents.set(id, agent); return h.resolveDefault(id) })
     h.runtime.executor.resume()
     await vi.waitFor(() => expect(claimed).toContain(copies()[0]![0].id))
     expect(copies()).toHaveLength(1)
@@ -714,6 +739,10 @@ describe('what a worker read', () => {
     await vi.waitFor(() => expect(sent()).toBe(1))
     // A step claims it and the restart cuts the step off before the Session took it, which drops it.
     h.claim(one.sessionId)
+    // The restart takes the process' Sessions with it; the one it loads again is what starts the new Assignment.
+    const loaded = h.agents.get(one.sessionId)!
+    h.agents.delete(one.sessionId); loaded.status = 'idle'
+    h.controller.resolveAgent.mockImplementation(async (id: string) => { if (id === one.sessionId) h.agents.set(id, loaded); return h.resolveDefault(id) })
     h.runtime.executor.resume()
     await vi.waitFor(() => expect(sent()).toBe(2))
     await h.runtime.idle(); await later()
