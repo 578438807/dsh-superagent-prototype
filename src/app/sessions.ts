@@ -178,9 +178,6 @@ export class Sessions {
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
-    // An archived Session rejects every step the loop proposes (ArchivedSessionGate), so a cron wake-up, subagent settlement,
-    // or queued follow-up would end as `blocked` with no model request. Unarchive here so every wake-up of this Session works.
-    if (ctx.workspaceRegistry.archivedSessionIds.includes(id as SessionId)) await ctx.workspaceRegistry.unarchiveSession(id as SessionId)
     const settings = this.host.store.settings()
     await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model, changed)
     await this.decorate(result.agent)

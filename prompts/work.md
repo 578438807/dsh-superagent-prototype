@@ -1,7 +1,3 @@
-## plan
-Before you touch anything, write your plan to outputs/plans/$DSH_SUPERAGENT_TICKET.json: {"ticket":"...","round":N,"why_now":"...","plan":[{"step":"...","class":"..."}],"expected_output":"...","eta_minutes":N}; each class is one of read, own-output, data-refresh, script-edit, policy-edit, delete, external-write, caliber.
-Running a script or refreshing data is data-refresh; script-edit changes a script's source; policy-edit changes .dsh settings; delete and external-write name what they touch. caliber means switching the production main caliber; checking or comparing one is read or own-output. Work outside that plan is undeclared and the audit fails it.
-Keep outputs/state/<rule id>.json current: standing objective, dated facts with evidence, open threads, ruled-out ideas, last round's plan and result; say why when you change direction.
 Recall before you start: call mnemon_recall once with what this ticket is about, because a conclusion, a pitfall or a standing preference already recorded is cheaper than rediscovering it.
 At the end call mnemon_remember once only when the verdict, a conclusion or a pitfall changed, not otherwise: one memory per ticket is noise, and the report already holds the detail.
 
