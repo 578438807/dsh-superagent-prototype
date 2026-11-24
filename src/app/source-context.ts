@@ -9,9 +9,9 @@ import type { Outbox } from './outbox.ts'
 import type { Store } from './store.ts'
 
 export interface SourceContextDeps {
-  readonly store: Pick<Store, 'atomic' | 'get' | 'set' | 'delete' | 'keys' | 'threads' | 'tickets' | 'triggers' | 'read'>
+  readonly store: Pick<Store, 'atomic' | 'get' | 'set' | 'delete' | 'keys' | 'threads' | 'tickets' | 'triggers' | 'read' | 'decisions'>
   readonly outbox: Pick<Outbox, 'send'>
-  readonly engine: Pick<EngineForSources, 'bindThread' | 'threadClosed'>
+  readonly engine: Pick<EngineForSources, 'bindThread' | 'threadClosed' | 'stopTicket'>
   readonly commands: Commands
   readonly sources: SourceRegistry
   /** Throws when accessed before initial setup completes. */
@@ -61,7 +61,9 @@ export function sourceContextOf(deps: SourceContextDeps, kind: { kind: string; h
       open: () => store.tickets.open(),
       bindThread: (id, thread, own) => { deps.engine.bindThread(id, thread, own) },
       threadClosed: (thread, outcome, at) => { deps.engine.threadClosed(thread, outcome, at) },
+      stop: (id, reason) => { deps.engine.stopTicket(id, reason) },
     },
+    decisions: { byThread: threadKey => store.decisions.byThread(threadKey) },
     triggers: { get: id => store.triggers.get(id), latest: thread => store.read.threadTriggers(thread, 1)[0] },
     notify: message => { deps.outbox.send(message) },
     report: (entry, value) => {

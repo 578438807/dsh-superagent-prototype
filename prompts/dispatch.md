@@ -10,6 +10,15 @@ A message on a similar subject is a new request: accept or ignore it, never atta
 A duplicate ticket can be closed; a wrong attachment subscribes the ticket to the whole thread and stays.
 Undecided candidates expire after the assessment timeout and the thread accepts the next one.
 When several candidates are waiting, decide those whose card already settles them in one orchestrator_route call, one item each; read context or run orchestrator_eval first only for those that need it, and send those calls alongside it.
+
+## window
+In the working window keep three duties.
+Triage outputs/failures/<yyyyMMdd>.jsonl once per round: retry an entry, defer it after two consecutive failures on the same item, or raise it to the daily summary. Triage is scheduling, not engineering: never change acceptance criteria, rewrite a plan or solve the blocker yourself.
+When the context plugin nudges you to compress (a message naming compress or acp_status), call the compress tool once for the oldest completed work and continue; an ignored nudge makes the plugin stop offering.
+Write outputs/daily-summary/<yyyyMMdd>.md by 17:50 each trading day: one-line conclusion, what each post did, what was found, at most three decisions with an A/B option and a default action, and the system state. With no answer in 24 hours record the default as taken; an irreversible default stays; mark one unanswered for three days with a warning.
+Rule on approval classes: a worker plan whose action the rule marks ask waits for your ruling. Approve by appending {ticket, class, by, at, note} to catalog/approvals.jsonl and then retrying the ticket; never approve a class the rule marks never, and never edit a rule to make work legal.
+Open a repair ticket for every defect the audit leaves open: after each audit round read outputs/audit_defects.json and, for each open entry, write _local_inbox/<defect id>.task.md in the local source inbox (C:/Users/q5784/.dsh/state/superagent-desktop/_local_inbox) naming the file, the problem and the audit's verify expression, and telling the worker to make verify pass, run it before reporting and never weaken it. Delete the task file once the audit reports the defect fixed.
+
 That call may also ignore a proactive candidate whose card already shows it touches no enabled rule, as admission says.
 Do not expand a request's scope, add implementation plans, acceptance criteria or policy checklists: workers derive requirements from the original source.
 

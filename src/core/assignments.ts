@@ -1,7 +1,7 @@
 /** What the Executor and its workers report about the Assignments that run tickets. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, liveTicket, runningAssignment } from './model.ts'
+import { latestAssignment, liveTicket, reportEnded, runningAssignment } from './model.ts'
 import type { ReportState, Ticket } from './model.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Replies } from './replies.ts'
@@ -17,8 +17,13 @@ export interface WorkerReport {
   askedBy?: string
   /** The person's question this report answers, which the worker thereby takes up; authorizes the main Session to send an answer reply. */
   answers?: string
+  /** A progress report asking the host for one more assignment; the host grants it only within the rule's extension budget. */
+  need_more?: boolean
+  /** A ready report whose round found nothing new to do, so a cron loop window stops asking until the next one. */
+  no_new_work?: boolean
 }
 const RECOVERY_NOTE = 'The host restarted during this ticket. Inspect the current worktree, git history and GitHub state before continuing. Do not repeat an already completed external operation. Finish the original assignment and report its status.'
+const EXTENSION_NOTE = 'The host granted this ticket one more assignment because your last progress report asked for it. Continue from where you stopped, do not repeat finished steps, and report the result again when done.'
 
 /**
  * Assignments records what the Executor and its workers report about the Assignments that run tickets: one started, Inputs
@@ -109,7 +114,9 @@ export class Assignments extends EnginePart {
     if (report.answers && !person(report.answers, false)) throw new UserError('notAnswerable')
     const assignment = runningAssignment(ticket) ?? latestAssignment(ticket)
     if (!assignment) throw new UserError('unknownAssignment')
-    if (assignment.state === 'ended') throw new UserError('assignmentEnded')
+    // A later report on the Assignment a blocked or failed report ended revives it, since its ticket still waits for it.
+    if (reportEnded(assignment)) { assignment.state = 'running'; delete assignment.endedAt; delete assignment.endedReason }
+    else if (assignment.state === 'ended') throw new UserError('assignmentEnded')
     const at = this.now()
     const previous = ticket.attention
     const ask = (question: string) => ({ id: key('attention', ticketId, question, at), question, ...(report.askedBy ? { triggerId: report.askedBy } : {}) })
@@ -119,11 +126,19 @@ export class Assignments extends EnginePart {
     else delete ticket.attention
     // A replaced or cleared attention question withdraws any pending unsent reply for the previous question from the outbox.
     if (previous && previous.id !== attention?.id) this.replies.withdrawAttention(previous.id)
-    assignment.report = { state: report.state, summary: report.summary, at }
+    assignment.report = { state: report.state, summary: report.summary, at, ...(report.no_new_work ? { no_new_work: true as const } : {}) }
     ticket.updatedAt = at
+    // A worker that reports progress with need_more asks for another assignment; the Executor tool already checked the rule budget.
+    if (report.state === 'progress' && report.need_more) {
+      this.tickets.restart(ticket, assignment, 'extended', EXTENSION_NOTE)
+      return this.require(ticketId)
+    }
     if (report.answers && !ticket.answers?.includes(report.answers)) ticket.answers = [...ticket.answers ?? [], report.answers]
     if (report.answers) this.takeUp(ticketId, report.answers)
     if (report.state === 'blocked' || report.state === 'failed') ticket.undelivered = ticket.undelivered.filter(id => !automatic(ticket.inputs.find(input => input.id === id)))
+    // A worker that reported blocked or failed stops there: its Assignment ends, so it holds no worker slot, while the ticket
+    // stays open and waits for a person (see `waitsForPerson`), and a new Assignment takes what reaches it after the report.
+    if (report.state === 'blocked' || report.state === 'failed') this.tickets.endReported(ticket, assignment)
     this.repo.tickets.save(ticket)
     // A ticket that follows Threads ends with them: a ready report ends it only once followsDone holds, with that outcome.
     const ready = !ticket.follows?.length ? 'completed' : this.tickets.followsDone(ticket)?.outcome

@@ -4,12 +4,12 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
+import { key, latestAssignment, latestReport, liveTicket, reportEnded, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
-import type { Settings } from '../policy.ts'
+import type { RoleModel, Rule, Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
@@ -29,7 +29,7 @@ const PREPARE_TIMEOUT_MS = 10 * 60_000
 /** Maximum transient retry attempts for a launch or worker turn, and the initial backoff before resuming a turn. */
 const TRANSIENT_TRIES = 3, TRANSIENT_BACKOFF_MS = 15_000
 /** How long a worker's background work may run on after its turn ended before it is stopped and the worker reported waiting. */
-const BACKGROUND_LIMIT_MS = 30 * 60_000
+const BACKGROUND_LIMIT_MS = 90 * 60_000
 /** How long a host stop waits for the workers' background work to stop. */
 const SHUTDOWN_STOP_MS = 10_000
 /** How long a worker that goes on after a passing failure waits for a worker slot, or for processing to resume, between looks. */
@@ -100,10 +100,35 @@ export const sourceTrigger = (host: { store: Pick<Store, 'triggers'> }, ticket: 
  * Returns additional system-prompt mandate instructions for a worker beyond the request: for work accepted proactively under
  * rules (`strength === 'inferred'`), restricts authorization to small internal changes within the rule scope; returns `''` for explicit requests.
  */
-export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string {
-  return mandate.strength === 'inferred' ? 'This ticket has limited proactive authorization. Independently verify that it is a small change '
+/** Renders a rule's objective, acceptance criteria, red lines and budget as contract text for the worker prompt. */
+export function ruleTerms(rule: Rule): string {
+  const NL = '\n'
+  const lines: string[] = []
+  if (rule.objective) lines.push(`objective: ${rule.objective}`)
+  const hard = rule.acceptance?.hard ?? []
+  const soft = rule.acceptance?.soft ?? []
+  if (hard.length) lines.push('must pass (checked by the host, not by you):' + NL + hard.map((x, i) => `${i + 1}. ${x}`).join(NL))
+  if (soft.length) lines.push('judged by an independent reviewer:' + NL + soft.map((x, i) => `${i + 1}. ${x}`).join(NL))
+  if (rule.redLines?.length) lines.push('red lines, never cross:' + NL + rule.redLines.map((x, i) => `${i + 1}. ${x}`).join(NL))
+  if (rule.budget?.minutes !== undefined) lines.push(`budget: about ${rule.budget.minutes} minutes, up to ${rule.budget.maxExtensions ?? 0} extension request(s)`)
+  if (rule.autonomy) lines.push(`autonomy: ${rule.autonomy}`)
+  return lines.join(NL)
+}
+/**
+ * Returns additional system-prompt mandate instructions for a worker beyond the request. For work accepted proactively under
+ * rules (`strength === 'inferred'`) with a rule contract, authorization is the rule objective plus its red lines: stay inside it,
+ * and only stop when a red line would be crossed or a public interface / product decision must change. Without a rule contract,
+ * restricts authorization to small internal changes within the rule scope. Returns `''` for explicit requests.
+ */
+export function mandateInstructions(mandate: Pick<Mandate, 'strength'>, rule?: Rule): string {
+  if (mandate.strength !== 'inferred') return ''
+  const terms = rule ? ruleTerms(rule) : ''
+  if (rule && rule.objective) return 'Your authorization is that rule objective plus its red lines; stay inside them. '
+    + 'The ticket objective and acceptance criteria define done — the listed steps are a reference, not a required order. '
+    + 'If a red line would be crossed, or a public interface or product decision must change, say so in a blocked report.' + (terms ? '\n\n' + terms : '')
+  return 'This ticket has limited proactive authorization. Independently verify that it is a small change '
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
-    + 'decisions or clarification, stop and report dropped; do not expand scope.' : ''
+    + 'decisions or clarification, stop and report dropped; do not expand scope.'
 }
 /** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
@@ -242,7 +267,7 @@ export class DshExecutor implements Executor {
       () => host.store.settings().executor.maxWorkers)
     // Each launch reserves a worker slot so launches run concurrently while slots are free.
     host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : this.slots.launches(),
-      retry: [5000, 300_000] })
+      retry: [1000, 60_000] })
     // Failed input deliveries are recorded on the ticket itself rather than reported through the `delivery` effect health entry (`quiet: true`).
     host.effects.handle('delivery', payload => this.deliverQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 4, quiet: true })
   }
@@ -263,7 +288,10 @@ export class DshExecutor implements Executor {
     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
     const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
-    if (command) await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)
+    // A Windows deployment has no `sh`: the prepare command is a batch/command string, so run it through cmd.exe.
+    // Running it through a POSIX shell there also eats the backslashes of every Windows path in it.
+    const shell = process.platform === 'win32' ? ['cmd.exe', '/d', '/s', '/c'] : ['sh', '-c']
+    if (command) await runAsWorker(this.host.context.subprocess, [...shell, command], dirname(directory), signal, env)
       .catch(async (error: unknown) => {
         // Remove an empty directory left by a failed prepare command so a later retry does not treat it as already prepared.
         await rmdir(directory).catch(() => { /* Absent, or holding what the command wrote, which the output explains. */ })
@@ -416,8 +444,11 @@ export class DshExecutor implements Executor {
   activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
   private running(ticket: Ticket): boolean {
-    if (!runningAssignment(ticket)) return false
-    return this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
+    const busy = this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.status === 'running' || this.settling.has(ticket.id)
+    // An ended Assignment holds no slot: that is what frees the slot of a worker that reported blocked or failed.
+    if (runningAssignment(ticket)) return busy
+    // A turn a person typed into the worker's Session is theirs, and holds the slot it runs in though no Assignment runs it.
+    return !!latestAssignment(ticket) && this.personal.has(ticket.id) && busy
   }
   /** Marks a ticket failed after its launch fails; the ticket waits until new human input or an explicit retry arrives. */
   private launchFailed(ticketId: string, assignmentId: string, error: unknown): void {
@@ -450,7 +481,7 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
+    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', this.roleModelChanged(sessionId))
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)
@@ -480,6 +511,13 @@ export class DshExecutor implements Executor {
       () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
     this.host.engine.assignmentStarted(ticket.id, assignment.id)
   }
+  /** Whether the stored `executor.model` changed since this process launched the worker of `sessionId`, so its next turn uses it. */
+  private roleModelChanged(sessionId: string): boolean {
+    const seen = this.launchedWith.get(sessionId)
+    if (seen === undefined) return false
+    const model = this.host.store.settings().executor.model
+    return (seen?.provider ?? null) !== (model?.provider ?? null) || (seen?.model ?? null) !== (model?.model ?? null)
+  }
   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
   private ticketOf(agent: Agent): Ticket | undefined {
     const ticketId = ticketOfSession(agent.id)
@@ -494,7 +532,9 @@ export class DshExecutor implements Executor {
       // The turn a stop of the worker's subagents woke and cancelled is no turn of the worker's.
       if (status !== 'idle' || cancelled.delete(agent) || this.host.closing()) return
       const ticket = this.ticketOf(agent)
-      const assignment = ticket && runningAssignment(ticket)
+      // The Assignment that went idle: the running one, or the latest once a report ended it, whose worker still ends its turn.
+      const latest = ticket && latestAssignment(ticket)
+      const assignment = (ticket && runningAssignment(ticket)) ?? (reportEnded(latest) ? latest : undefined)
       if (ticket && assignment && liveTicket(ticket)) void this.background(this.workerIdle(ticket, assignment, agent))
     }))
     // A person's message typed into a worker's Session, which the ticket does not record.
@@ -532,14 +572,19 @@ export class DshExecutor implements Executor {
    * Reconciles running and pending assignments across open tickets after a host restart: notifies Engine of interrupted
    * running assignments and re-queues pending launches (which earlier versions may have kept outside the effect queue),
    * while failed launches (`waitsForPerson`) wait for a person's message or a retry.
+   *
+   * `resume()` also runs when dsh-bundle reloads its plugins, which remounts this fiber while the workers keep running:
+   * those are left alone. Only a worker that is gone or idle is interrupted, because a running one would lose the turn it
+   * is in the middle of, its tool call failing with `AbortError` (`tool call aborted`).
    */
   resume(): void {
     // Launch pending tickets oldest first (in acceptance order).
     for (const ticket of this.host.store.tickets.open().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
       const running = runningAssignment(ticket), latest = latestAssignment(ticket)
       if (running) {
-        // A restart within this process left DSH's Sessions, jobs and subagents running: they stop first. The inbox keeps an
-        // Input that was handed over but not yet taken.
+        if (this.busy(ticket.id)) continue
+        // A restart that left DSH's Sessions, jobs and subagents running stops them first. The inbox keeps an Input that was
+        // handed over but not yet taken.
         this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.cancel({ kind: 'user' }, { keepInbox: true })
         this.stopWork(ticket.id, 'dsh-superagent restarted', true)
         this.host.engine.assignmentInterrupted(ticket.id, running.id)
@@ -547,6 +592,20 @@ export class DshExecutor implements Executor {
       else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.start(ticket, latest)
     }
   }
+  /** Whether the worker of `ticketId` is loaded and does something this process can see: a turn that runs, or background work it keeps. */
+  private busy(ticketId: string): boolean {
+    const sessionId = workerSessionId(ticketId)
+    const agent = this.host.context.agents.get(sessionId as SessionId)
+    if (!agent) return false
+    if (agent.status !== 'idle') return true
+    // Background work of a worker that went idle, which a restart used to stop for a worker it wrongly took as dead.
+    return this.settling.has(ticketId) || !!this.left.has(ticketId) || runningJobs(this.host.context, sessionId).length > 0
+  }
+  /**
+   * The role model this worker was launched with. The bundle's reload remounts this fiber while the workers go on, so only a
+   * launch in this process can tell a changed `executor.model` apart from a policy taken before the change.
+   */
+  private readonly launchedWith = new Map<string, RoleModel | null>()
   /** Runs background worker event handling and updates the `worker` health entry on failure or recovery. */
   private background(work: Promise<void>): Promise<void> {
     const { health } = this.host
@@ -616,22 +675,25 @@ export class DshExecutor implements Executor {
     if (this.resuming.has(idle.id) || agent.status !== 'idle') return
     // A turn that ended as turns do starts the count of passing failures again.
     this.transient.delete(idle.id)
+    // The Assignment that went idle, which a newer one has not replaced: the running one, or the latest once a report ended
+    // it, since its worker still finishes the turn it reported in.
+    const held = (stored: Ticket) => runningAssignment(stored) ?? latestAssignment(stored)
     // The ticket while the Assignment that went idle runs it.
     const live = () => {
       const stored = this.host.store.tickets.get(ticket.id)
-      return stored && liveTicket(stored) && runningAssignment(stored)?.id === idle.id ? stored : undefined
+      return stored && liveTicket(stored) && held(stored)?.id === idle.id ? stored : undefined
     }
     // A worker whose last word was its result, a question for a person, or a blocked or failed report handed off to a person;
     // an Input delivered after its result or question is new work.
     const handedOff = (stored: Ticket) => {
-      const assignment = runningAssignment(stored), report = assignment?.report
+      const assignment = held(stored), report = assignment?.report
       const since = !!assignment?.deliveredAt && !!report && assignment.deliveredAt >= report.at
       return ((report?.state === 'ready' || !!stored.attention) && !since) || waitsForPerson(stored)
     }
     const before = live()
     if (!before || this.host.closing()) return
     // A turn a person started in the Session is the person's work, which goes on in the background as any turn's does.
-    const report = runningAssignment(before)?.report, person = this.personal.get(ticket.id)
+    const report = held(before)?.report, person = this.personal.get(ticket.id)
     // The worker read what reached it before a turn that ended: one it handed off with, or one whose background work ended.
     if (handedOff(before) && !(report && person && person > report.at)) {
       this.host.engine.turnEnded(ticket.id, idle.id)

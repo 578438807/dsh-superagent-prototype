@@ -60,6 +60,9 @@ export class Setup {
   /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
+    // Saving the GitHub block in a local-only deployment must not fail on the repository
+    // that local mode deliberately leaves empty.
+    if (block === 'source:github' && this.localOnly(settings)) return
     const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
       : resolveDeployment(machine, settings.sources.github?.config, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
@@ -73,10 +76,20 @@ export class Setup {
     const { context, machine, lifetime } = this.host
     return workerProbe(context.subprocess, machine.stateDir, machine.stateDir, lifetime)
   }
+  /** True when the local Source is the deployment target and no GitHub repository is configured. */
+  private localOnly(settings: Settings): boolean {
+    const repository = String((settings.sources.github?.config as { repository?: unknown } | undefined)?.repository ?? '').trim()
+    return settings.sources.local?.enabled === true && (settings.sources.github?.enabled !== true || repository === '')
+  }
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
+    // A local-only deployment (local Source on, no GitHub repository) needs no GitHub probe:
+    // the local and cron Sources run from a folder and a clock. Without this branch setup
+    // stops on `repositoryUnset` and every Source stays paused.
+    const deployment = this.localOnly(settings)
+      ? { ...machine, repository: machine.stateDir, github: { cli: '', login: '', noreply: '' } }
+      : await resolveDeployment(machine, settings.sources.github?.config, probe)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem

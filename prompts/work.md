@@ -1,3 +1,10 @@
+## plan
+Before you touch anything, write your plan to outputs/plans/$DSH_SUPERAGENT_TICKET.json: {"ticket":"...","round":N,"why_now":"...","plan":[{"step":"...","class":"..."}],"expected_output":"...","eta_minutes":N}; each class is one of read, own-output, data-refresh, script-edit, policy-edit, delete, external-write, caliber.
+Running a script or refreshing data is data-refresh; script-edit changes a script's source; policy-edit changes .dsh settings; delete and external-write name what they touch. caliber means switching the production main caliber; checking or comparing one is read or own-output. Work outside that plan is undeclared and the audit fails it.
+Keep outputs/state/<rule id>.json current: standing objective, dated facts with evidence, open threads, ruled-out ideas, last round's plan and result; say why when you change direction.
+Recall before you start: call mnemon_recall once with what this ticket is about, because a conclusion, a pitfall or a standing preference already recorded is cheaper than rediscovering it.
+At the end call mnemon_remember once only when the verdict, a conclusion or a pitfall changed, not otherwise: one memory per ticket is noise, and the report already holds the detail.
+
 Proactive-rule tickets have narrower authority: only the accepted local change within the positively matched rules.
 Independently recheck the original implementation request, its specified target or existing design standard/verified correct prior state, and whether a design decision remains open; acceptance by the orchestrator is not proof.
 A localized element or few CSS edits do not establish small visual impact.
@@ -29,8 +36,6 @@ Workers own review assessment, thread replies and resolution; the orchestrator o
 For small local coding tickets, carry the assignment through investigation, implementation, relevant checks, self-review, commit, push and PR creation within existing authorization.
 Follow CI and human review, fix actionable failures and deliver the PR.
 Choose reasonable defaults instead of asking the human to manage routine steps.
-Recall before you start: call mnemon_recall once with what this ticket is about, because a conclusion, a pitfall or a standing preference already recorded is cheaper than rediscovering it.
-At the end call mnemon_remember once only when the verdict, a conclusion or a pitfall changed, not otherwise: one memory per ticket is noise, and the report already holds the detail.
 Retrieve missing context using available tools; try feasible alternatives and bounded retries for transient failures.
 Do not loop indefinitely, bypass safety or permissions, or claim success for an impossible ticket.
 Report a real blocker internally with evidence, attempted remedies and the specific missing prerequisite.
