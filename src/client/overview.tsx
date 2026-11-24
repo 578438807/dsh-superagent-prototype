@@ -78,7 +78,7 @@ function ContextLifespan() {
   // and the Section fills itself in once the Host serves it.
   if (!data) return <Section title={t('ctxTitle')}><Hint>{error ? t('ctxUnavailable') : t('loading')}</Hint></Section>
   if (!data.ok) return <Section title={t('ctxTitle')}>
-    <Hint>{t(data.problem === 'proxyOffline' ? 'ctxProxyOffline' : 'ctxNoSession')}</Hint>
+    <Hint>{data.problem === 'proxyOffline' ? t('ctxProxyOffline', { origin: data.proxyOrigin ?? '' }) : t('ctxNoSession')}</Hint>
   </Section>
   const used = data.sessionTokens ?? 0
   const pct = data.window > 0 ? Math.min(100, Math.round(used / data.window * 100)) : 0
