@@ -74,9 +74,11 @@ function ContextLifespan() {
   const { t, call } = usePanel()
   // The window changes only when the proxy restarts, and the usage on each model request; ten seconds is close enough.
   const { data, error } = usePoll(() => call('GET context'), [], 10_000)
-  if (!data) return <Section title={t('ctxTitle')}><LoadState error={error} loading /></Section>
+  // A Host that has not loaded the route yet answers 404, which is not something to show as an error: the poll retries,
+  // and the Section fills itself in once the Host serves it.
+  if (!data) return <Section title={t('ctxTitle')}><Hint>{error ? t('ctxUnavailable') : t('loading')}</Hint></Section>
   if (!data.ok) return <Section title={t('ctxTitle')}>
-    <Hint>{t(data.problem === 'proxyOffline' ? 'ctxProxyOffline' : 'ctxNoSession')}</Hint>
+    <Hint>{data.problem === 'proxyOffline' ? t('ctxProxyOffline', { origin: data.proxyOrigin ?? '' }) : t('ctxNoSession')}</Hint>
   </Section>
   const used = data.sessionTokens ?? 0
   const pct = data.window > 0 ? Math.min(100, Math.round(used / data.window * 100)) : 0

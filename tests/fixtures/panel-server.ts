@@ -255,7 +255,8 @@ function initial(): PanelServer {
     // A Session well below its over-alert line, with a measured slope, so the panel shows every number it can.
     context: { ok: true, session: 'master', model: 'deepseek-v4.1-flash', measured: 'usage', window: 900_000, warnLine: 630_000,
       foldStep: 30_000, sessionTokens: 225_379, sentTokens: 201_450, growth: 674, roomToWarn: 404_621, roomToWindow: 674_621,
-      perRequest: 12_000, roundsToWarn: 33, samples: 5, at: '2026-11-22T04:50:00Z' },
+      perRequest: 12_000, roundsToWarn: 33, samples: 5, proxyOrigin: 'http://127.0.0.1:18788',
+      at: '2026-11-22T04:50:00Z' },
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -298,7 +299,8 @@ const ticketOf = (id: string) =>
   [...server.tickets.open, ...server.person, ...server.tickets.ended].find(ticket => ticket.id === id) ?? server.ticketDetails[id]
 const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
-const ROUTES: { [K in keyof Api]: Route<K> } = {
+// Exported for the evidence captures (`.evidence/`), which answer the panel from these same fixtures.
+export const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
   'GET context': { answer: contextView },
   'GET overview': { answer: overviewView },

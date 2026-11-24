@@ -146,8 +146,10 @@ const TEXT = {
   ctxFoldStep: ['折叠步长', 'Fold step'],
   ctxPerRequest: ['每次请求新增（样本数）', 'Per request (samples)'],
   ctxEstimate: ['用量是 bili 的估算值，不是模型回报的实测值，可能高于真实用量。', 'The usage is bili\'s estimate rather than a measurement the model reported, so it can run above the real figure.'],
-  ctxProxyOffline: ['读不到 bili 代理（127.0.0.1:18788），长寿机制的读数暂时没有来源。', 'The bili proxy at 127.0.0.1:18788 does not answer, so there is nothing to measure yet.'],
+  // `{origin}` is the address the plugin resolved at read time (env override, bili's own instance record, or the default).
+  ctxProxyOffline: ['读不到 bili 代理（{origin}），长寿机制的读数暂时没有来源。', 'The bili proxy at {origin} does not answer, so there is nothing to measure yet.'],
   ctxNoSession: ['这个 Session 还没有发出过模型请求，bili 还没有它的上下文读数。', 'This Session has not sent a model request yet, so bili has no context reading for it.'],
+  ctxUnavailable: ['这个界面还没读到寿命数据：宿主可能还没载入这条路，读数会在它能回答后自动补上。', 'No longevity reading yet: the Host may not have loaded this route, and the reading appears as soon as it can answer.'],
   lastDay: ['过去 24 小时', 'Last 24 hours'],
   flowReceivedLabel: ['到达', 'Arrived'],
   flowFilteredLabel: ['被过滤', 'Filtered'],
