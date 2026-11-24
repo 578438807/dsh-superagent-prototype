@@ -220,6 +220,8 @@ async function drive(host: Host) {
   // Resume runs once the status request reached the worker (whose Assignment is then busy rather than settled), so it gets the recovery note.
   await runtime.idle()
   expect(runtime.store.tickets.get(b)!.undelivered).toEqual([])
+  // The worker's Session is gone, as a restart of the process leaves it for this one; one DSH still holds runs on unaffected.
+  host.agents.delete(workerB)
   runtime.executor.resume()
   await runtime.pump()
   await runtime.idle()

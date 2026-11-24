@@ -9,7 +9,7 @@ import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Execu
   from '../core/index.ts'
 import type { Machine } from '../deployment.ts'
 import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
-import type { Rule, Settings } from '../policy.ts'
+import type { RoleModel, Rule, Settings } from '../policy.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
@@ -481,7 +481,7 @@ export class DshExecutor implements Executor {
     }
     if (!current()) return
     const sessionId = workerSessionId(ticket.id)
-    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker')
+    const agent = await this.host.sessions.ensure(sessionId, workspace, ticket.title, 'worker', this.roleModelChanged(sessionId))
     if (!current()) return
     // The background work of the Assignment this one replaces stops first, so its end does not clear this one's message.
     await this.stopped(ticket.id)
@@ -510,6 +510,13 @@ export class DshExecutor implements Executor {
       () => { if (!current()) throw new Error('Launch authorization changed before worker delivery') },
       () => { this.host.engine.assignmentStarted(ticket.id, assignment.id) })
     this.host.engine.assignmentStarted(ticket.id, assignment.id)
+  }
+  /** Whether the stored `executor.model` changed since this process launched the worker of `sessionId`, so its next turn uses it. */
+  private roleModelChanged(sessionId: string): boolean {
+    const seen = this.launchedWith.get(sessionId)
+    if (seen === undefined) return false
+    const model = this.host.store.settings().executor.model
+    return (seen?.provider ?? null) !== (model?.provider ?? null) || (seen?.model ?? null) !== (model?.model ?? null)
   }
   /** Returns the stored ticket for `agent` when it is a worker session, or undefined otherwise. */
   private ticketOf(agent: Agent): Ticket | undefined {
@@ -565,14 +572,19 @@ export class DshExecutor implements Executor {
    * Reconciles running and pending assignments across open tickets after a host restart: notifies Engine of interrupted
    * running assignments and re-queues pending launches (which earlier versions may have kept outside the effect queue),
    * while failed launches (`waitsForPerson`) wait for a person's message or a retry.
+   *
+   * `resume()` also runs when dsh-bundle reloads its plugins, which remounts this fiber while the workers keep running:
+   * those are left alone. Only a worker that is gone or idle is interrupted, because a running one would lose the turn it
+   * is in the middle of, its tool call failing with `AbortError` (`tool call aborted`).
    */
   resume(): void {
     // Launch pending tickets oldest first (in acceptance order).
     for (const ticket of this.host.store.tickets.open().sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
       const running = runningAssignment(ticket), latest = latestAssignment(ticket)
       if (running) {
-        // A restart within this process left DSH's Sessions, jobs and subagents running: they stop first. The inbox keeps an
-        // Input that was handed over but not yet taken.
+        if (this.busy(ticket.id)) continue
+        // A restart that left DSH's Sessions, jobs and subagents running stops them first. The inbox keeps an Input that was
+        // handed over but not yet taken.
         this.host.context.agents.get(workerSessionId(ticket.id) as SessionId)?.cancel({ kind: 'user' }, { keepInbox: true })
         this.stopWork(ticket.id, 'dsh-superagent restarted', true)
         this.host.engine.assignmentInterrupted(ticket.id, running.id)
@@ -580,6 +592,20 @@ export class DshExecutor implements Executor {
       else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.start(ticket, latest)
     }
   }
+  /** Whether the worker of `ticketId` is loaded and does something this process can see: a turn that runs, or background work it keeps. */
+  private busy(ticketId: string): boolean {
+    const sessionId = workerSessionId(ticketId)
+    const agent = this.host.context.agents.get(sessionId as SessionId)
+    if (!agent) return false
+    if (agent.status !== 'idle') return true
+    // Background work of a worker that went idle, which a restart used to stop for a worker it wrongly took as dead.
+    return this.settling.has(ticketId) || !!this.left.has(ticketId) || runningJobs(this.host.context, sessionId).length > 0
+  }
+  /**
+   * The role model this worker was launched with. The bundle's reload remounts this fiber while the workers go on, so only a
+   * launch in this process can tell a changed `executor.model` apart from a policy taken before the change.
+   */
+  private readonly launchedWith = new Map<string, RoleModel | null>()
   /** Runs background worker event handling and updates the `worker` health entry on failure or recovery. */
   private background(work: Promise<void>): Promise<void> {
     const { health } = this.host
