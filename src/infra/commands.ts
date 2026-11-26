@@ -9,11 +9,12 @@ const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
 /**
  * Escapes arguments that reach a Windows batch shim, where `cmd.exe` parses them a second time: an unescaped `&` ends the
- * command, so a GitHub URL whose query carries several parameters silently becomes a shorter request.
+ * command, so a GitHub URL whose query carries several parameters silently becomes a shorter request. `%` is deliberately
+ * left alone: doubling it would keep a percent-encoded query such as `%3A` from being decoded, and GitHub answers HTTP 400.
  */
 export function shimArgs(args: string[], platform: NodeJS.Platform = process.platform): string[] {
   if (platform !== 'win32') return args
-  return args.map(argument => argument.replace(/\^/g, '^^').replace(/&/g, '^^^&').replace(/%/g, '%%'))
+  return args.map(argument => argument.replace(/\^/g, '^^').replace(/&/g, '^^^&'))
 }
 /**
  * Error thrown by Commands when a CLI invocation fails, capturing stderr diagnostics, API error codes, and exit status without echoing command arguments.

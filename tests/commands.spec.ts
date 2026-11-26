@@ -23,9 +23,12 @@ describe('account-isolated operations', () => {
   })
   it('escape what cmd.exe would read a second time inside a Windows shim, and nothing on other platforms', () => {
     const url = `repos/${REPOSITORY}/issues?state=all&per_page=5`
+    const encoded = `${url}&since=2026-11-26T12%3A13%3A01.887Z`
     expect(shimArgs(['api', url, '--include'], 'win32')).toEqual(['api', url.replace(/&/g, '^^^&'), '--include'])
     expect(shimArgs(['api', url], 'win32')).toEqual(['api', url.replace(/&/g, '^^^&')])
-    expect(shimArgs(['api', url, '-f', 'body=100% ^ok'], 'win32')).toEqual(['api', url.replace(/&/g, '^^^&'), '-f', 'body=100%% ^^ok'])
+    // Doubling the percent sign would make gh send the encoded text as-is, which GitHub answers with HTTP 400.
+    expect(shimArgs(['api', encoded], 'win32')).toEqual(['api', encoded.replace(/&/g, '^^^&')])
+    expect(shimArgs(['api', url, '-f', 'body=100% ^ok'], 'win32')).toEqual(['api', url.replace(/&/g, '^^^&'), '-f', 'body=100% ^^ok'])
     expect(shimArgs(['api', `repos/${REPOSITORY}/commits/main`, '--jq', '.sha'], 'win32'))
       .toEqual(['api', `repos/${REPOSITORY}/commits/main`, '--jq', '.sha'])
     expect(shimArgs(['api', url], 'linux')).toEqual(['api', url])
