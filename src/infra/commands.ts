@@ -8,6 +8,14 @@ import type { Deployment } from '../deployment.ts'
 const exec = promisify(execFile)
 const TIMEOUT_MS = 90_000
 /**
+ * Escapes arguments that reach a Windows batch shim, where `cmd.exe` parses them a second time: an unescaped `&` ends the
+ * command, so a GitHub URL whose query carries several parameters silently becomes a shorter request.
+ */
+export function shimArgs(args: string[], platform: NodeJS.Platform = process.platform): string[] {
+  if (platform !== 'win32') return args
+  return args.map(argument => argument.replace(/\^/g, '^^').replace(/&/g, '^^^&').replace(/%/g, '%%'))
+}
+/**
  * Error thrown by Commands when a CLI invocation fails, capturing stderr diagnostics, API error codes, and exit status without echoing command arguments.
  * Source channels and pollers inspect its code to distinguish deleted conversations from retryable failures.
  */
@@ -67,7 +75,7 @@ export class Commands {
   withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
   async run(program: string, args: string[], cwd?: string): Promise<string> {
     try {
-      const { stdout } = await exec(program, args, { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
+      const { stdout } = await exec(program, shimArgs(args), { cwd, signal: this.signal, timeout: TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
         env: { ...process.env, ...this.environment, GH_PROMPT_DISABLED: '1', LARKSUITE_CLI_NO_UPDATE_NOTIFIER: '1', LARKSUITE_CLI_NO_SKILLS_NOTIFIER: '1' } })
       return stdout
     } catch (error) { throw commandError(error, program) }

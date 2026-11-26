@@ -3,7 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { agentEvents, installModelSelection, type Agent, type ModelSelection, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { initializeRoleModel } from '../src/app/role-models.ts'
 const contexts: Context[] = []
 afterEach(async () => { await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose())); vi.restoreAllMocks() })
@@ -62,4 +62,28 @@ it('inherits the host when unset and fails unavailable routes before recording a
   resolve.mockRejectedValueOnce(new Error('unknown provider'))
   await expect(initializeRoleModel(ctx, agent, { provider: 'unknown', model: 'x' })).rejects.toThrow('unknown provider')
   expect(agent.session.snapshotEvents().some(event => event.type === 'model/selection')).toBe(false)
+})
+it('moves a Session onto the configured model once the settings changed, for the next turn', async () => {
+  const { ctx, agent, resolve, flush, record } = await fixture()
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'old' })
+  record({ provider: 'worker', model: 'old' })
+  expect(resolve).toHaveBeenCalledOnce()
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' }, true)
+  const selections = agent.session.snapshotEvents().filter(event => event.type === 'model/selection')
+  expect(selections.at(-1)!.data).toEqual({ provider: 'worker', model: 'new' })
+  expect(resolve).toHaveBeenCalledTimes(2)
+  expect(flush).toHaveBeenCalledTimes(2)
+  // The same configuration twice appends nothing.
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' }, true)
+  expect(agent.session.snapshotEvents().filter(event => event.type === 'model/selection')).toHaveLength(2)
+})
+it('keeps the model a person picked in the Session before a settings change reached it', async () => {
+  const { ctx, agent, resolve, record } = await fixture()
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'old' })
+  record({ provider: 'worker', model: 'old' })
+  const typed = agent.session.append('user/message', { role: 'user', id: MessageId('typed-1'), content: [], source: { kind: 'user' } }, { surfaceOp: 'append' })
+  ctx.emit('session/event', agent.session, typed)
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' }, true)
+  expect(resolve).toHaveBeenCalledOnce()
+  expect(agent.session.snapshotEvents().filter(event => event.type === 'model/selection')).toHaveLength(1)
 })

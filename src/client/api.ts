@@ -134,6 +134,7 @@ export type SearchView = ApiResponse<'GET search'>
 export type TicketSummary = SearchView['tickets'][number]
 export type { TicketStage }
 export type HistoryView = ApiResponse<'GET policy/history'>
+export type TuningView = ApiResponse<'GET tuning'>
 export type PromptsView = ApiResponse<'GET prompts'>
 export type PromptConfig = PromptsView['defaults']
 export type ThreadFacts = TicketRow['threads'][number]

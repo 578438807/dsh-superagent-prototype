@@ -37,7 +37,10 @@ interface Skill { name: string; description: string; content: string }
  * Maximum combined character count of system prompt and tool definitions per role (~5% above baseline).
  * Lower this limit when shrinking model-facing text; raise it only intentionally and explain why in the commit message.
  */
-const BUDGET: Record<Role, number> = { orchestrator: 59_000, worker: 40_500 }
+// Raised from 59_000/40_500 when the working-window duties (failure triage, daily summary, approval
+// rulings, repair tickets, worker plan/state board) and the context-nudge instruction became part of the
+// prompts: the text is operational, not padding.
+const BUDGET: Record<Role, number> = { orchestrator: 61_000, worker: 41_500 }
 const PROMPTS = 'prompts/, skills/', TOOLS = 'src/app/tools/', SESSIONS = 'src/app/sessions.ts'
 const NOTICES = 'src/app/notices.ts', LINKS = 'src/app/links.ts', ASSESSMENT = 'src/app/assessment.ts'
 const EXECUTOR = 'src/executor/dsh.ts', ERRORS = 'src/core/errors.ts'
@@ -106,7 +109,7 @@ async function start() {
     const own = new Map<string, Tool>(), registered: Skill[] = []
     tools.set(sessionId, own); skills.set(sessionId, registered)
     const register = (tool: Tool) => { own.set(tool.name, tool); return () => own.delete(tool.name) }
-    agentCtx.reflect.provide('tools', { register, get: () => undefined, restrict: () => () => {}, guard: () => () => {} })
+    agentCtx.reflect.provide('tools', { register, get: () => undefined, schemas: () => [], restrict: () => () => {}, guard: () => () => {} })
     agentCtx.reflect.provide('skills', { register: (skill: Skill) => { registered.push(skill); return () => {} } })
     const section = (spec: { text: Section }) => { sections.set(sessionId, spec.text); return () => {} }
     agentCtx.reflect.provide('systemPrompt', { section })
@@ -131,7 +134,7 @@ async function start() {
   const ctx = new Context()
   const history = { read: async () => ({ events: [] }), [Symbol.asyncDispose]: async () => {} }
   const services = { agents, llm: { resolveCallConfig: async (value: unknown) => value },
-    workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }) },
+    workspaceRegistry: { create: async (cwd: string) => ({ id: cwd }), archivedSessionIds: [] as string[], unarchiveSession: async () => {} },
     sessionController: { create, resolveAgent, selectModel: async () => {}, rename: async () => {}, inspect: async () => ({ events: [] }) },
     sessionPersistence: { flush: async () => {}, open: async () => history }, permissionPresets: { set: () => {} }, subprocess,
     webServer: { host: '127.0.0.1', port: 3082, register: () => () => {} } }
@@ -217,6 +220,8 @@ async function drive(host: Host) {
   // Resume runs once the status request reached the worker (whose Assignment is then busy rather than settled), so it gets the recovery note.
   await runtime.idle()
   expect(runtime.store.tickets.get(b)!.undelivered).toEqual([])
+  // The worker's Session is gone, as a restart of the process leaves it for this one; one DSH still holds runs on unaffected.
+  host.agents.delete(workerB)
   runtime.executor.resume()
   await runtime.pump()
   await runtime.idle()

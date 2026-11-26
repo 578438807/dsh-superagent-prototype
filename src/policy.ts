@@ -3,6 +3,7 @@
  * Who may originate work is configured per Source in that Source's own identities; the Policy never maps a person across Sources.
  */
 import { LIMITS } from './limits.ts'
+import { ScheduleConfigSchema } from './schedule.ts'
 import { z } from 'zod'
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell, type AdmissionRow } from './admission.ts'
 import { key, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
@@ -64,8 +65,37 @@ const DEFAULT_RULES = [
   { id: 'visual', name: 'Visual fixes', enabled: true, instruction: 'Explicit implementation requests for local spacing, alignment, overflow or styling, with a specified target or an objectively established existing standard/correct state to restore. Locating an element or calling it inconsistent, unattractive or hard to understand does not establish a target. Do not invent visual style, information hierarchy, rendering or interaction decisions. No redesign, new interaction or behavior. A known spacing defect does not authorize adjacent undefined restyling; assess only a clearly separable authorized scope. If direction or scope is unsettled, observe only: no acknowledgement, worker or unsolicited question.' },
 ]
 /** An assessment rule; its instruction may also specify PR reviewers and whether to wait for their approval. */
+export const RuleAcceptanceSchema = z.object({
+  hard: z.array(z.string().trim().min(1).max(LIMITS.acceptanceItem)).max(LIMITS.acceptanceItems).default([]),
+  soft: z.array(z.string().trim().min(1).max(LIMITS.acceptanceItem)).max(LIMITS.acceptanceItems).default([]),
+  /** Optional evidence file (relative to the ticket directory) the soft reviewer reads alongside the report. */
+  evidence: z.string().trim().max(400).optional(),
+}).strict()
+export type RuleAcceptance = z.infer<typeof RuleAcceptanceSchema>
+export const RuleBudgetSchema = z.object({
+  minutes: z.number().int().min(LIMITS.ruleBudgetMinutes.min).max(LIMITS.ruleBudgetMinutes.max).optional(),
+  maxExtensions: z.number().int().min(LIMITS.ruleMaxExtensions.min).max(LIMITS.ruleMaxExtensions.max).default(0),
+}).strict()
+export type RuleBudget = z.infer<typeof RuleBudgetSchema>
+// How long an approval class name may be and how many a rule may list is a guard against a configuration accident, not a
+// number a person chooses: they belong to the code that reads the class names, so they stay out of `LIMITS` and the panel.
+const APPROVAL_CLASS_CHARS = 40
+const APPROVALS_PER_KIND = 20
+export const RuleApprovalsSchema = z.object({
+  auto: z.array(z.string().trim().min(1).max(APPROVAL_CLASS_CHARS)).max(APPROVALS_PER_KIND).default([]),
+  ask: z.array(z.string().trim().min(1).max(APPROVAL_CLASS_CHARS)).max(APPROVALS_PER_KIND).default([]),
+  never: z.array(z.string().trim().min(1).max(APPROVAL_CLASS_CHARS)).max(APPROVALS_PER_KIND).default([]),
+}).strict()
+export type RuleApprovals = z.infer<typeof RuleApprovalsSchema>
 export const RuleSchema = z.object({ id: RuleIdSchema, name: z.string().trim().min(1).max(LIMITS.ruleName), enabled: z.boolean(),
-  instruction: z.string().trim().min(1).max(LIMITS.ruleInstruction) }).strict()
+  instruction: z.string().trim().min(1).max(LIMITS.ruleInstruction),
+  objective: z.string().trim().min(1).max(LIMITS.ruleObjective).optional(),
+  acceptance: RuleAcceptanceSchema.optional(),
+  redLines: z.array(z.string().trim().min(1).max(LIMITS.ruleRedLine)).max(LIMITS.ruleRedLines).optional(),
+  budget: RuleBudgetSchema.optional(),
+  autonomy: z.enum(['high','medium','low']).optional(),
+  approvals: RuleApprovalsSchema.optional(),
+  }).passthrough()
 export type Rule = z.infer<typeof RuleSchema>
 export const RoleModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
 export type RoleModel = z.infer<typeof RoleModelSchema>
@@ -91,10 +121,11 @@ const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => n
 export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
-  directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
+  // Upstream only accepted POSIX paths; a Windows executor directory such as `C:/...` was rejected.
+  directory: z.string().trim().refine(path => path === '' || /^(?:[A-Za-z]:[\\/]|\/)/.test(path), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
-}).strict()
+}).passthrough()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({
   paused: z.boolean().default(false),
@@ -102,9 +133,10 @@ export const SettingsSchema = z.object({
   policy: PolicyConfigSchema.default(() => PolicyConfigSchema.parse({})),
   eval: EvalConfigSchema.default(() => EvalConfigSchema.parse({})),
   executor: ExecutorConfigSchema.default(() => ExecutorConfigSchema.parse({})),
-}).strict()
+  schedule: ScheduleConfigSchema.default(() => ScheduleConfigSchema.parse({})),
+}).passthrough()
 export type Settings = z.infer<typeof SettingsSchema>
-export type SettingsBlock = 'policy' | 'eval' | 'executor' | `source:${string}`
+export type SettingsBlock = 'policy' | 'eval' | 'executor' | 'schedule' | `source:${string}`
 export type SettingsSave = SettingsBlock | 'pause'
 export type SettingsOrigin = 'panel' | 'tool' | 'sync'
 

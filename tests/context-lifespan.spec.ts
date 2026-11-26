@@ -1,8 +1,10 @@
 /** The panel's context-longevity view: the two constants it must share with the over-alert script, and the numbers it shows. */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
+import { biliOrigin, DEFAULT_ORIGIN, ORIGIN_ENV } from '../src/app/bili-endpoint.ts'
 import { DEFAULT_WINDOW, WARN_RATIO, effectiveWindow, growthRate, requestsUntil, summarize, warnLine } from '../src/app/context-lifespan.ts'
 
 /**
@@ -74,4 +76,50 @@ it('takes the slope from whole requests only, and never reports a count that can
   expect(requestsUntil(700_000, 630_000, 10_000)).toBeNull()
   expect(requestsUntil(600_000, 630_000, null)).toBeNull()
   expect(requestsUntil(600_000, 630_000, 4_000)).toBe(7)
+})
+
+/**
+ * Where the proxy is: bili ladders to the next port when one is taken, so the address must come from bili's own record
+ * rather than a constant. The same three-level priority has to hold in `scripts/session_overflow_alert.py`, whose
+ * `bili_origin()` the second test runs in Python — the panel and the cron alert must never look at different ports.
+ */
+const PROXY_RECORD = join(tmpdir(), `bili-proxy-origin-${process.pid}.json`)
+
+it('reads the proxy address from the override, then bili\'s record, then the address assumed before it could be found', () => {
+  writeFileSync(PROXY_RECORD, JSON.stringify({ origin: 'http://127.0.0.1:18789', pid: 19984 }))
+  expect(biliOrigin({}, PROXY_RECORD)).toEqual({ origin: 'http://127.0.0.1:18789', source: 'instance' })
+  // bili writes the trailing slash of an origin, and a record being written is a read that may catch half a file.
+  writeFileSync(PROXY_RECORD, JSON.stringify({ origin: 'http://127.0.0.1:18789/' }))
+  expect(biliOrigin({}, PROXY_RECORD).origin).toBe('http://127.0.0.1:18789')
+  expect(biliOrigin({ [ORIGIN_ENV]: 'http://127.0.0.1:19999/' }, PROXY_RECORD)).toEqual({ origin: 'http://127.0.0.1:19999', source: 'env' })
+  // An empty override is "not configured", not "somewhere empty": the record still decides.
+  expect(biliOrigin({ [ORIGIN_ENV]: '  ' }, PROXY_RECORD).source).toBe('instance')
+  // A record that cannot be found, is not JSON, or names a path rather than an origin is no answer at all.
+  expect(biliOrigin({}, join(tmpdir(), 'no-such-bili-record.json'))).toEqual({ origin: DEFAULT_ORIGIN, source: 'default' })
+  writeFileSync(PROXY_RECORD, 'not json')
+  expect(biliOrigin({}, PROXY_RECORD)).toEqual({ origin: DEFAULT_ORIGIN, source: 'default' })
+  writeFileSync(PROXY_RECORD, JSON.stringify({ origin: '127.0.0.1:18789' }))
+  expect(biliOrigin({}, PROXY_RECORD)).toEqual({ origin: DEFAULT_ORIGIN, source: 'default' })
+  writeFileSync(PROXY_RECORD, JSON.stringify({ origin: 'http://127.0.0.1:18789/__bili/sessions' }))
+  expect(biliOrigin({}, PROXY_RECORD).origin).toBe(DEFAULT_ORIGIN)
+})
+
+it('resolves the same address in Python, so the panel and the cron alert cannot disagree', () => {
+  if (!SCRIPT) return
+  writeFileSync(PROXY_RECORD, JSON.stringify({ origin: 'http://127.0.0.1:18789/' }))
+  const cases: Record<string, string>[] = [{}, { SUPERAGENT_BILI_ORIGIN: 'http://127.0.0.1:19999' },
+    { SUPERAGENT_BILI_ORIGIN: '  ' }, { SUPERAGENT_BILI_ORIGIN: '127.0.0.1:19999' }]
+  const answer = JSON.parse(execFileSync('python', ['-c', [
+    'import importlib.util, json, sys, pathlib',
+    `spec = importlib.util.spec_from_file_location("alert", r"${SCRIPT}")`,
+    'module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)',
+    'record = pathlib.Path(sys.argv[1]); envs = json.loads(sys.argv[2])',
+    'print(json.dumps([module.bili_origin(env, record) for env in envs]))',
+  ].join('\n'), PROXY_RECORD, JSON.stringify(cases)], { encoding: 'utf8' }))
+  expect(answer).toEqual(cases.map(env => biliOrigin(env, PROXY_RECORD).origin))
+})
+
+it('names the address it read in both outcomes, so an offline panel says where it looked', () => {
+  expect(summarize('s4', undefined, CONFIG, 1_000_000, 'http://127.0.0.1:18789').proxyOrigin).toBe('http://127.0.0.1:18789')
+  expect(summarize('s4', { ok: true, contextTokens: 1000, requests: 1 }, CONFIG, 1_000_000).proxyOrigin).toBe(DEFAULT_ORIGIN)
 })

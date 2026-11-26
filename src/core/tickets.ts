@@ -1,7 +1,7 @@
 /** Tickets: their lifecycle from an accept to their end, their Subscriptions and their Inputs. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
+import { latestAssignment, latestReport, liveTicket, readUntil, reportEnded, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
 import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
@@ -242,6 +242,13 @@ export class Tickets extends EnginePart {
     const running = runningAssignment(ticket), latest = latestAssignment(ticket)
     if (running) this.options.executor.deliver(ticket, running)
     else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.options.executor.start(ticket, latest)
+    // The Assignment a blocked or failed report ended takes nothing further: what reaches the ticket after that report starts
+    // a new one, unless it is a Policy change or a message no person wrote, which never starts a worker on their own.
+    else if (reportEnded(latest) && !waitsForPerson(ticket) && input.kind !== 'policy-changed' && !automatic(input)) {
+      const assignment = this.newAssignment(ticket)
+      this.repo.tickets.save(ticket)
+      this.options.executor.start(ticket, assignment)
+    }
   }
   /**
    * Resume an ended ticket under its unchanged Mandate when a person's message on one of its Threads waits for it: no Eval
@@ -383,6 +390,14 @@ export class Tickets extends EnginePart {
     ticket.assignments.push(assignment)
     delete ticket.delivery
     return assignment
+  }
+  /**
+   * End an Assignment on its worker's blocked or failed report: the ticket stays open and waits for a person, while the
+   * Assignment stops holding a worker slot, and a new Assignment takes what reaches the ticket after that report.
+   */
+  endReported(ticket: Ticket, assignment: Assignment): void {
+    const reason = assignment.report?.state === 'blocked' ? 'reportedBlocked' : 'reportedFailed'
+    this.endAssignment(ticket, assignment, reason)
   }
   private endAssignment(ticket: Ticket, assignment: Assignment, reason: string): void {
     assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason

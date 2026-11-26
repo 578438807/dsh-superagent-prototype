@@ -155,7 +155,10 @@ it('warns as the Session nears its over-alert line, and names the reason when th
   server.context = { ...server.context, ok: false, problem: 'proxyOffline', sessionTokens: null }
   await remount()
   expect(document.querySelector('.dt-meter')).toBeNull()
-  expect(text()).toContain(zh.ctxProxyOffline)
+  // The hint names the address the plugin resolved, so a moved proxy reads as a moved proxy, not as a stale constant.
+  const offline = zh.ctxProxyOffline.replace('{origin}', server.context.proxyOrigin)
+  expect(offline).not.toContain('{origin}')
+  expect(text()).toContain(offline)
   server.context = { ...server.context, problem: 'sessionUnknown' }
   await remount()
   expect(text()).toContain(zh.ctxNoSession)

@@ -29,8 +29,8 @@ export const KV = {
   prompts: { revision: record<number>('prompt-revision'), version: family<PromptVersion, [revision: number]>('prompt-version:'),
     /** The built-in text of a prompt part an override was edited from, by its `base`, which shows what an upgrade changed. */
     builtIn: family<string, [base: string]>('prompt-built-in:') },
-  /** Runtime: the main Session's ID. */
-  runtime: { masterId: record<string>('master-id') },
+  /** Runtime: the main Session's ID, and the days a daily summary was already asked for. */
+  runtime: { masterId: record<string>('master-id'), dailySummary: family<string, [day: string]>('daily-summary:') },
   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
   sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
@@ -52,6 +52,14 @@ export const KV = {
    * Feishu Source: known chats (`true` for direct messages); per-chat history cursor and active topics mapped from topic ID
    * to last-seen timestamp; and per-polled-thread seen message IDs and initialization flag.
    */
+  /**
+   * Cron Source: whether a job already fired for a day (`fired`), the last loop round it opened (`round`), and per round the
+   * product fingerprint it started from plus the host's verdict on whether it then added anything (`product`).
+   */
+  cron: { fired: family<boolean, [job: string, day: string]>('cron-fired:'), round: family<number, [job: string, day: string]>('cron-round:'),
+    product: family<{ fingerprint: string; judged?: 'idle' | 'progress' }, [job: string, day: string, round: number]>('cron-product:') },
+  /** Local Source: the content hash already seen for one task file, so an unchanged file is not re-ingested. */
+  local: { seen: family<{ hash: string }, [file: string]>('local-seen:') },
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { CliError, Commands, commandError } from '../src/infra/commands.ts'
+import { CliError, Commands, commandError, shimArgs } from '../src/infra/commands.ts'
 import { feishuKind } from '../src/sources/feishu.ts'
 import { feishuChannel } from '../src/sources/feishu-trigger.ts'
 import { githubKind } from '../src/sources/github.ts'
@@ -20,6 +20,16 @@ describe('account-isolated operations', () => {
     const commands = new Commands(() => deployment, {}, new AbortController().signal); const run = vi.spyOn(commands,'run').mockResolvedValue('{}')
     await commands.gh(['api','some-path','-f','body=`whoami` $(touch x)'])
     expect(run).toHaveBeenCalledWith('/path/agent-gh', ['api','some-path','-f','body=`whoami` $(touch x)'])
+  })
+  it('escape what cmd.exe would read a second time inside a Windows shim, and nothing on other platforms', () => {
+    const url = `repos/${REPOSITORY}/issues?state=all&per_page=5`
+    expect(shimArgs(['api', url, '--include'], 'win32')).toEqual(['api', url.replace(/&/g, '^^^&'), '--include'])
+    expect(shimArgs(['api', url], 'win32')).toEqual(['api', url.replace(/&/g, '^^^&')])
+    expect(shimArgs(['api', url, '-f', 'body=100% ^ok'], 'win32')).toEqual(['api', url.replace(/&/g, '^^^&'), '-f', 'body=100%% ^^ok'])
+    expect(shimArgs(['api', `repos/${REPOSITORY}/commits/main`, '--jq', '.sha'], 'win32'))
+      .toEqual(['api', `repos/${REPOSITORY}/commits/main`, '--jq', '.sha'])
+    expect(shimArgs(['api', url], 'linux')).toEqual(['api', url])
+    expect(shimArgs(['api', url], 'darwin')).toEqual(['api', url])
   })
   it('runs every command with its environment over the process environment, where undefined removes a variable', async () => {
     process.env.GH_TOKEN = 'personal'

@@ -5,8 +5,14 @@
  * The window, the alert line and the fold step are read from the running proxy, so a configuration change needs no copy
  * of them here; only the two constants the over-alert script also owns live in this module, and
  * `tests/context-lifespan.spec.ts` runs that script's own functions to prove they have not drifted apart.
+ *
+ * The proxy's address comes from `bili-endpoint.ts`, which resolves the same record the over-alert script reads: bili
+ * ladders to the next port when one is taken, so the address cannot be a constant here.
  */
-const PROXY = 'http://127.0.0.1:18788'
+import { biliOrigin, DEFAULT_ORIGIN } from './bili-endpoint.ts'
+
+/** The proxy address this read went to, resolved when the read happens rather than when the plugin loads. */
+const PROXY = () => biliOrigin().origin
 /** `DEFAULT_WINDOW` of `_tools/session_overflow_alert.py`: the effective window when the proxy reports no configuration. */
 export const DEFAULT_WINDOW = 900_000
 /** `WARN_RATIO` of `_tools/session_overflow_alert.py`: the over-alert line as a ratio of the effective window. */
@@ -72,6 +78,8 @@ export interface ContextLifespanView {
   roundsToWarn: number | null
   /** How many measurements the growth rate is taken from, so the panel can say when it has too few. */
   samples: number
+  /** The address this reading came from, so a failure names where it looked rather than a constant that may be stale. */
+  proxyOrigin: string
   at: string
 }
 
@@ -108,18 +116,18 @@ async function read(url: string): Promise<unknown> {
 /** Read the proxy's configuration, cached for a minute: it changes only when the proxy restarts. */
 async function proxyConfig(now: number): Promise<ProxyConfig> {
   if (configCache && now - configCache.at < CONFIG_MS) return configCache.value
-  const value = await read(`${PROXY}/__bili/config`) as ProxyConfig
+  const value = await read(`${PROXY()}/__bili/config`) as ProxyConfig
   configCache = { at: now, value }
   return value
 }
 
 /** Build the view from the two payloads, so the numbers can be checked without a running proxy. */
-export function summarize(session: string, status: ProxyStatus | undefined, config: ProxyConfig | undefined, now = Date.now()):
-ContextLifespanView {
+export function summarize(session: string, status: ProxyStatus | undefined, config: ProxyConfig | undefined, now = Date.now(),
+  proxyOrigin = DEFAULT_ORIGIN): ContextLifespanView {
   const window = effectiveWindow(config)
   const line = warnLine(window)
   const foldStep = number(config?.compress?.nudgeGrowthTokens)
-  const base = { session, window, warnLine: line, foldStep, at: new Date(now).toISOString() }
+  const base = { session, window, warnLine: line, foldStep, proxyOrigin, at: new Date(now).toISOString() }
   if (status?.ok !== true) {
     return { ...base, ok: false, problem: 'sessionUnknown', model: null, measured: 'unavailable', sessionTokens: null, sentTokens: null,
       growth: null, roomToWarn: null, roomToWindow: null, perRequest: null, roundsToWarn: null, samples: 0 }
@@ -143,14 +151,15 @@ ContextLifespanView {
 
 /** The orchestrator Session's longevity, read from the running proxy. */
 export async function contextLifespan(session: string, now = Date.now()): Promise<ContextLifespanView> {
+  const origin = biliOrigin().origin
   let config: ProxyConfig
   try { config = await proxyConfig(now) } catch {
-    return { ...summarize(session, undefined, undefined, now), problem: 'proxyOffline' }
+    return { ...summarize(session, undefined, undefined, now, origin), problem: 'proxyOffline' }
   }
   try {
-    const status = await read(`${PROXY}/__bili/plugin/status?conversationId=${encodeURIComponent(session)}`) as ProxyStatus
-    return summarize(session, status, config, now)
+    const status = await read(`${origin}/__bili/plugin/status?conversationId=${encodeURIComponent(session)}`) as ProxyStatus
+    return summarize(session, status, config, now, origin)
   } catch {
-    return { ...summarize(session, undefined, config, now), problem: 'proxyOffline' }
+    return { ...summarize(session, undefined, config, now, origin), problem: 'proxyOffline' }
   }
 }

@@ -121,6 +121,8 @@ Sources poll subscribed Threads while a live Ticket subscribes, and for two week
 
 When an Executor Session reports `blocked` or `failed`, or fails to start or errors, which records `failed`, the Ticket takes no automatic Input.
 
+That report ends its Assignment, so the Ticket holds no worker slot while it waits; the Ticket itself stays open, and what reaches it afterwards starts a new Assignment.
+
 A passing failure of the model provider or the network, an HTTP 408, 429 or 5xx or a refused, reset or timed-out connection, is tried again first, three times with a growing backoff: a launch runs again, and a worker whose turn failed is told to go on; a failed prepare command is not tried again.
 
 Once failed, CI and bot messages are recorded on it, but they are not delivered and do not wake the Session.
@@ -145,7 +147,7 @@ The Executor model applies only when a Session is created; an existing Session k
 
 Running Assignments end with "host restarted" and new ones start with a recovery note that tells the Executor to check its directory, git history and GitHub before repeating any outside action, oldest Ticket first.
 
-Assignments that are waiting, ready, blocked or failed stay as they are, unless an Input reached them after that Report, in which case they start again too.
+Assignments that are waiting or ready stay as they are, and one that a blocked or failed Report ended is not started again on its own, unless an Input reached it after that Report, in which case a new Assignment takes it.
 
 Sessions, directories, Subscriptions, pending messages and the stored work below survive a restart, and so does the record of which messages each Executor Session took into its history, which a step does once it claimed them and before its model call: a message taken by a turn the restart cut off counts as read once a Report or the end of a turn follows, while one a step claimed but a cancel or error cut off before the history counts as unread.
 

@@ -53,25 +53,45 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 /**
- * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills, its todo list and
- * subagents. It gets no other tool the profile has, whenever it was registered: none that asks or shows a person something,
- * changes the profile, schedules work or starts goals outside the worker slots, the pause and a person's hold, starts or
- * messages other Sessions, or edits documents.
+ * The context-management tools a context plugin registers globally. Both Sessions list them from here, so the lists cannot
+ * drift apart: without them on the wire the plugin sees no compress surface and suppresses every nudge, and a Session grows
+ * past the window and never folds.
  */
-const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
-  'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+const CONTEXT_TOOLS = ['compress', 'decompress', 'search_context', 'acp_status', 'acp_cache', 'acp_read_original_image'] as const
 /**
- * The tool classes a Session also gets, whoever registered them: an MCP server's tools and the memory plugin's. They are
- * classes rather than members, so a plugin that adds a tool after this file was written still reaches a Session, and no
- * allowlist literal has to name it. Naming members one by one is what hid every `mnemon_*` tool: it was installed,
- * loaded and registered, and neither Session could see it.
+ * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills, its todo list,
+ * subagents and its own context management. It gets no other tool the profile has, whenever it was registered: none that
+ * asks or shows a person something, changes the profile, schedules work or starts goals outside the worker slots, the pause
+ * and a person's hold, starts or messages other Sessions, or edits documents.
+ */
+const WORK_TOOLS: readonly string[] = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill',
+  'web_search', 'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent',
+  ...CONTEXT_TOOLS]
+/**
+ * The classes of tool a plugin registers globally under a prefix, which no list can name in advance: an MCP server's
+ * `mcp__<server>__<tool>`, and the `mnemon_*` memory tools the profile's memory plugin registers. Both are work tools a
+ * Session may use, so the class is named here and the members are read from the registry; naming them one by one would
+ * hide every tool a plugin adds after this file was written.
  */
 const PLUGIN_PREFIXES: readonly string[] = ['mcp__', 'mnemon_']
 /**
- * The members of an allowed class that are still not work tools: the memory plugin's document writers and managers edit
- * documents, which `WORK_TOOLS` names as forbidden. Its search, which only reads, stays allowed.
+ * Within one of those classes, the tools that are a forbidden class after all: the memory plugin writes and manages
+ * documents in its own store, which is editing documents, so a Session reads, recalls and records memories but does not
+ * create or manage a document. Searching them reads, so it stays.
  */
 const PLUGIN_EXCLUDES: readonly string[] = ['mnemon_document_create', 'mnemon_document_manage']
+/**
+ * What replaces the AgentTeams captain protocol in an Executor Session's prompt. The profile's text is the captain's: it drives
+ * a Web team through agent_teams_* tools that a worker Session does not have, and it names 14 of them. A worker leads its own
+ * subagents through spawn_teammate and the team_task_* board, so it keeps the collaboration duties and the tools it holds.
+ */
+const WORKER_TEAM_PROTOCOL = '## Team collaboration\n'
+  + 'Delegate a bounded piece of your own work with spawn_teammate, and the rest of this ticket yourself. Record what a member gets '
+  + 'with team_task_create and its progress with team_task_update; read the board with team_task_list and team_task_get. Ask or '
+  + 'answer a member with send_message, wait for it with wait_agent, stop it with interrupt_agent, and read list_agents before you '
+  + 'assume who is running. You do not create, approve, resume or edit a Web team: those tools are the main Session\'s, and a '
+  + 'request for one goes back to the main Session in your report. A member\'s report is input, not a result: check what it claims '
+  + 'before you rely on it, and report to the main Session what you verified rather than what a member said.'
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -146,8 +166,8 @@ export class Sessions {
       if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
     })
   }
-  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
-  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
+  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model (`changed` applies a changed setting to a Session that already ran), decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
+  async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker', changed = false): Promise<Agent> {
     const ctx = this.ctx
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     if ('error' in result && result.error.code === 'session/not-found') {
@@ -158,8 +178,11 @@ export class Sessions {
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
+    // An archived Session rejects every step the loop proposes (ArchivedSessionGate), so a cron wake-up, subagent settlement,
+    // or queued follow-up would end as `blocked` with no model request. Unarchive here so every wake-up of this Session works.
+    if (ctx.workspaceRegistry.archivedSessionIds.includes(id as SessionId)) await ctx.workspaceRegistry.unarchiveSession(id as SessionId)
     const settings = this.host.store.settings()
-    await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
+    await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model, changed)
     await this.decorate(result.agent)
     ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
@@ -257,7 +280,9 @@ export class Sessions {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      const ruleId = current?.mandate.basis.rules?.[0]
+      const rule = ruleId ? host.store.settings().policy.rules.find(item => item.id === ruleId) : undefined
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate, rule) : ''}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -272,7 +297,12 @@ export class Sessions {
     const register = this.registerTool(agent, binding)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      binding.disposers.push(this.restrictTools(agent, () => ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill']
+      // Keep only the tools this DSH registers: a profile without `bash` (Windows, pwsh only) would otherwise make restrict throw.
+      // The main Session also keeps the context-management tools a context plugin registers globally (see CONTEXT_TOOLS):
+      // without them billion-context sees no compress surface and suppresses every nudge, so the session grows past the
+      // window and never folds. Tools registered below are added after this restrict, so only the plugin-provided names that
+      // exist need listing here.
+      binding.disposers.push(this.restrictTools(agent, () => ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill', ...CONTEXT_TOOLS]
         .filter(name => agent.ctx.tools.get(name))),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
@@ -281,20 +311,37 @@ export class Sessions {
     }
   }
   /**
-   * The tools of a plugin class a Session works with, read from the profile's registry: an MCP server's tools and the
-   * memory plugin's, less the members `PLUGIN_EXCLUDES` names. `get` is asked too, because the registry may still list a
-   * tool whose plugin has unloaded, and naming that one makes `restrict` throw instead of dropping it.
+   * Whether a Session runs the router preset: as DSH's preset registry last selected it, read through the session projection
+   * on a DSH whose registry has no `presetForSession`, else as it was created; `standard`, the safer caps, when unreadable.
+   */
+  private routed(agent: Agent): boolean {
+    try {
+      const presets = this.ctx.get('agentPresets') as { presetForSession?: (session: Agent['session']) => string | null } | undefined
+      const projections = this.ctx.get('sessionProjections') as { stateOf?: (session: Agent['session'], key: string) => unknown } | undefined
+      const selected = typeof presets?.presetForSession === 'function' ? presets.presetForSession(agent.session)
+        : projections?.stateOf?.(agent.session, 'agentPreset')
+      return (selected ?? agent.session.header.agentPreset) === ROUTER_PRESET
+    } catch { return false }
+  }
+  /**
+   * Every plugin tool this DSH has under one of `PLUGIN_PREFIXES` (an MCP server's, the memory plugin's) except the ones
+   * `PLUGIN_EXCLUDES` keeps out, which no list can name in advance: a plugin decides its own tools, registers them
+   * globally, and re-registers them when it reconnects. Read from the global view, which no restriction filters, so the set
+   * stays readable while it is restricted; each name is checked once more so a tool that went away between reading and
+   * restricting is dropped rather than making `restrict` throw.
    */
   private pluginTools(agent: Agent): string[] {
     try {
       return agent.ctx.tools.schemas().map(schema => schema.name)
-        .filter(name => PLUGIN_PREFIXES.some(prefix => name.startsWith(prefix)) && !PLUGIN_EXCLUDES.includes(name) && agent.ctx.tools.get(name))
+        .filter(name => PLUGIN_PREFIXES.some(prefix => name.startsWith(prefix)) && !PLUGIN_EXCLUDES.includes(name)
+          && agent.ctx.tools.get(name))
     } catch { return [] }
   }
   /**
-   * Restricts a Session to `allow` plus its plugin class's tools, and again whenever the profile's tools change, so a
-   * plugin that loads after the Session existed still reaches it. The names are recorded before restricting, so the
-   * change that restriction itself announces re-enters and stops at once instead of looping.
+   * Restrict `agent` to `allow()` and the plugin tools it has now, keeping that true across the registry changes a plugin
+   * makes as it loads, reconnects and reloads: each `tools/change` re-applies the restriction when the plugin names differ.
+   * The names are recorded before restricting, so the change that restriction itself announces re-enters and stops at once
+   * instead of looping.
    */
   private restrictTools(agent: Agent, allow: () => string[]): () => void {
     // Undefined, not empty: the first apply must register even an empty `allow`, which restricts every tool away.
@@ -318,19 +365,6 @@ export class Sessions {
     apply()
     const off = this.ctx.on('tools/change', apply)
     return () => { off(); dispose() }
-  }
-  /**
-   * Whether a Session runs the router preset: as DSH's preset registry last selected it, read through the session projection
-   * on a DSH whose registry has no `presetForSession`, else as it was created; `standard`, the safer caps, when unreadable.
-   */
-  private routed(agent: Agent): boolean {
-    try {
-      const presets = this.ctx.get('agentPresets') as { presetForSession?: (session: Agent['session']) => string | null } | undefined
-      const projections = this.ctx.get('sessionProjections') as { stateOf?: (session: Agent['session'], key: string) => unknown } | undefined
-      const selected = typeof presets?.presetForSession === 'function' ? presets.presetForSession(agent.session)
-        : projections?.stateOf?.(agent.session, 'agentPreset')
-      return (selected ?? agent.session.header.agentPreset) === ROUTER_PRESET
-    } catch { return false }
   }
   /**
    * An Executor Session's tools: only the profile's work tools, which DSH requires to be known, and none once its ticket

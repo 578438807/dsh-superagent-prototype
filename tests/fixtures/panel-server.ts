@@ -15,6 +15,7 @@ import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, Source
 import type { ContextLifespanView } from '../../src/app/context-lifespan.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
 import { EvalConfigSchema, ExecutorConfigSchema, PolicyConfigSchema, SettingsSchema } from '../../src/policy.ts'
+import { ScheduleConfigSchema } from '../../src/schedule.ts'
 import { SetupError, type SetupCode } from '../../src/setup.ts'
 import { feishuChannel } from '../../src/sources/feishu-trigger.ts'
 import { githubChannel } from '../../src/sources/github-trigger.ts'
@@ -171,7 +172,8 @@ const settingsView = (): ApiResponse<'GET settings'> => ({
   policyVersion: 'abcdef1234567890',
   blocks: { policy: { value: server.settings.policy, revision: server.revisions.policy ?? 0 },
     eval: { value: server.settings.eval, revision: server.revisions.eval ?? 0 },
-    executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 } },
+    executor: { value: server.settings.executor, revision: server.revisions.executor ?? 0 },
+    schedule: { value: server.settings.schedule, revision: server.revisions.schedule ?? 0 } },
   sources: sourceSettings(),
   environment: { root: '/srv/dsh-superagent/work', variables: [
     { owner: 'executor', enabled: true, variables: [{ key: 'DSH_SUPERAGENT_DIR', description: { zh: '工单的执行目录',
@@ -255,7 +257,8 @@ function initial(): PanelServer {
     // A Session well below its over-alert line, with a measured slope, so the panel shows every number it can.
     context: { ok: true, session: 'master', model: 'deepseek-v4.1-flash', measured: 'usage', window: 900_000, warnLine: 630_000,
       foldStep: 30_000, sessionTokens: 225_379, sentTokens: 201_450, growth: 674, roomToWarn: 404_621, roomToWindow: 674_621,
-      perRequest: 12_000, roundsToWarn: 33, samples: 5, at: '2026-11-22T04:50:00Z' },
+      perRequest: 12_000, roundsToWarn: 33, samples: 5, proxyOrigin: 'http://127.0.0.1:18788',
+      at: '2026-11-22T04:50:00Z' },
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -298,7 +301,8 @@ const ticketOf = (id: string) =>
   [...server.tickets.open, ...server.person, ...server.tickets.ended].find(ticket => ticket.id === id) ?? server.ticketDetails[id]
 const SourceSave = z.object({ enabled: z.boolean(), config: z.unknown() })
 
-const ROUTES: { [K in keyof Api]: Route<K> } = {
+// Exported for the evidence captures (`.evidence/`), which answer the panel from these same fixtures.
+export const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET state': { answer: stateView },
   'GET context': { answer: contextView },
   'GET overview': { answer: overviewView },
@@ -354,13 +358,14 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   } },
   'PUT settings/:block': { body: true, answer: ({ params: { block }, body }) => {
     const source = block.startsWith('source:') ? KINDS.find(kind => `source:${kind.kind}` === block) : undefined
-    if (!['policy', 'eval', 'executor'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
+    if (!['policy', 'eval', 'executor', 'schedule'].includes(block) && !source) return block.startsWith('source:') ? refuse(404, 'Source not found')
       : refuse(400, 'Invalid settings: block')
     if (body.revision !== (server.revisions[block] ?? 0)) return refuse(409, 'Settings changed. Reload before saving.')
     let restarting = false
     if (block === 'policy') server.settings = { ...server.settings, policy: PolicyConfigSchema.parse(body.value) }
     else if (block === 'executor') server.settings = { ...server.settings, executor: ExecutorConfigSchema.parse(body.value) }
     else if (block === 'eval') server.settings = { ...server.settings, eval: EvalConfigSchema.parse(body.value) }
+    else if (block === 'schedule') server.settings = { ...server.settings, schedule: ScheduleConfigSchema.parse(body.value) }
     else if (source) {
       const { enabled, config: value } = SourceSave.parse(body.value)
       const config = source.schema.parse(value)
@@ -376,8 +381,10 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     return { restarting, revision: server.revisions[block] }
   } },
   'GET policy/history': { answer: () => server.history },
+  'GET tuning': { answer: () => ({ proposals: [], history: [], policy: server.settings.policy, revision: server.revisions.policy ?? 0 }) },
   'POST policy-sync/:id': { answer: ({ params }) => ({ policy: server.settings.policy.sources[params.id] }) },
   'POST setup/check': { answer: () => ({ restarting: true }) },
+    'POST runtime/restart': { answer: () => ({ restarting: true as const }) },
   'GET models': { answer: () => ({ default: { provider: 'host', model: 'default' }, routableProviders: [], failures: [],
     groups: [{ id: 'worker-provider', name: 'Worker provider', models: [{ id: 'worker-model', name: 'Worker model',
       reasoning: { efforts: [{ id: 'high', name: 'High' }] } }] }] }) },
