@@ -47,6 +47,10 @@ export class Tickets extends EnginePart {
       if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
     }
     ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
+    // A Trigger may declare the tools its worker needs beyond the baseline, read from the task file that started it; the routing
+    // decision may declare them too. Nothing is granted here: the tools are fixed on the ticket and applied where it runs.
+    const declared = outcome.tools ?? primary?.tools
+    if (declared?.length) ticket.tools = [...declared]
     const assignment = this.newAssignment(ticket)
     this.repo.tickets.save(ticket)
     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)

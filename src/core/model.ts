@@ -36,6 +36,11 @@ export interface Trigger {
   url?: string
   /** Source-native details for adapters; the core never interprets them. */
   meta: Record<string, unknown>
+  /**
+   * The tools or capabilities a ticket it starts declares beyond the worker baseline, such as `web-local` for a real browser:
+   * a source may read them from the request that arrives, and the ticket they start keeps them (see `capabilities.ts`).
+   */
+  tools?: string[]
 }
 
 /** Where a trigger went after intake; it grants nothing, but decides who decides a person's follow-up (see `followupOwners`). */
@@ -273,11 +278,23 @@ export type TicketEndBy = 'executor' | 'human'
 export type TicketOutcome = 'completed' | 'merged' | 'closed' | 'dropped' | 'stopped'
 /** A question for a person; `triggerId` is the human message that raised it, whose conversation it goes back to. */
 export interface Attention { id: string; question: string; triggerId?: string }
+/**
+ * A tool a worker's report asked for beyond what its ticket declared, with the reason. It is a request recorded for the main
+ * Session, never a grant: a worker cannot unmask, install or approve a tool, so the main Session decides what to do with it.
+ */
+export interface ToolRequest { tool: string; capability?: string; reason: string; at: string }
 /** Ticket aggregate: an authorized work item with its assignments, channels, thread bindings, and inputs. */
 export interface Ticket {
   id: string
   title: string
   decisionId: string
+  /**
+   * The tools or capabilities this ticket declares beyond the worker baseline (`WORK_TOOLS`), fixed at acceptance from the
+   * routing decision or the Trigger it came from; a ticket that declares none runs on the baseline alone.
+   */
+  tools?: string[]
+  /** What its workers asked for beyond `tools`, oldest first, for the main Session to decide; carrying one grants nothing. */
+  toolRequests?: ToolRequest[]
   mandate: Mandate
   /** The Channels of the messages it was accepted from, which its replies go to. */
   channels: ChannelRef[]

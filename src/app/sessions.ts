@@ -7,6 +7,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { key, liveTicket, type Ticket } from '../core/index.ts'
+import { declaredTools } from '../core/capabilities.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
@@ -282,7 +283,11 @@ export class Sessions {
       const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
       const ruleId = current?.mandate.basis.rules?.[0]
       const rule = ruleId ? host.store.settings().policy.rules.find(item => item.id === ruleId) : undefined
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate, rule) : ''}`
+      // What the ticket declared beyond the baseline is said here, so the worker uses the tools it was granted for the work
+      // that needed them, instead of asking for what it already has; a tool it still lacks is a request it reports.
+      const granted = master || !current ? [] : declaredTools(current.tools)
+      const declared = granted.length ? `\n\nThis ticket declares ${current!.tools!.join(', ')} and you run with ${granted.join(', ')}. Use them for the work that needed them and report what they did; a tool you still lack is a request in your report, not something you grant yourself.` : ''
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate, rule) : ''}${declared}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {
@@ -375,7 +380,13 @@ export class Sessions {
   private workOnly(agent: Agent, ticketId: string): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
-    return [this.restrictTools(agent, () => WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))), agent.ctx.tools.guard(() => {
+    // The baseline work tools, plus the ones the ticket declared: a declared capability (see `capabilities.ts`) or tool name adds
+    // exactly those tools, and only when the profile has them; an undeclared ticket keeps the baseline alone. Read the ticket on
+    // every change, so a declaration amended on a live ticket reaches its worker without a restart.
+    return [this.restrictTools(agent, () => {
+      const allow = [...WORK_TOOLS, ...declaredTools(store.tickets.get(ticketId)?.tools)]
+      return allow.filter((name, at) => allow.indexOf(name) === at).filter(name => agent.ctx.tools.get(name, parent))
+    }), agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
     })]
