@@ -1406,6 +1406,14 @@ it('keeps replies and acknowledgements to an IM conversation within the IM limit
   await expect(runTool(sessionId, 'orchestrator_ack', { trigger_id: follow.id, text: long })).rejects.toThrow(`at most ${IM_WORDS} words`)
 })
 
+it('still stops the Runtime when proper-lockfile reports its state lock compromised', async () => {
+  rmSync(`${directory}.lock`, { recursive: true, force: true })
+  await vi.waitFor(() => {
+    expect(runtime.lifetime.aborted).toBe(true)
+    expect(runtime.health.runtime).toMatchObject({ state: 'error', detail: expect.stringMatching(/lock|ENOENT/i) })
+  }, { timeout: 17_000, interval: 100 })
+}, 20_000)
+
 it('refuses a second process on the same state directory before it opens the database, so it migrates nothing', () => {
   // A database the running build would read as schema 10 stays as it is.
   const db = new DatabaseSync(join(directory, 'orchestrator.sqlite'))
