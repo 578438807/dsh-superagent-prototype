@@ -97,6 +97,10 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         reply_to_trigger_id: z.string().optional().describe('The explicit human question this report answers; never for ordinary progress.'),
         need_more: z.boolean().optional().describe('With state=progress: ask the host for one more assignment when the rule budget allows it; the host decides.'),
         no_new_work: z.boolean().optional().describe('With state=ready: this round found nothing new to do, so a cron loop window stops asking this job until the next window. The summary must name the artifact that did not change; without it the report is judged by acceptance as usual.'),
+        tool_request: z.array(z.object({ tool: z.string().trim().min(1).max(60),
+          capability: z.string().trim().min(1).max(60).optional(),
+          reason: z.string().trim().min(1).max(200) }).strict()).max(6).optional()
+          .describe('Tools you need and this ticket did not declare, each with the reason it was needed: recorded on the ticket for the main Session, which decides whether to grant it. A request grants nothing by itself, and you cannot install, unmask or approve a tool.'),
       }).strict(),
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
@@ -166,6 +170,15 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         return host.store.atomic(() => {
           const refused = pull && claimPull(host.github, ticketId, pull)
           if (refused) throw new Error(refused)
+          // Asking is recorded on the ticket, next to what it declared, so the main Session reads the request where it reads the
+          // ticket; nothing here grants, installs or unmasks a tool, which keeps asking from becoming self-authorization.
+          if (args.tool_request?.length) {
+            const asked = host.store.tickets.get(ticketId)!
+            const at = new Date().toISOString()
+            asked.toolRequests = [...asked.toolRequests ?? [], ...args.tool_request.map(item => ({ ...item, at }))]
+            asked.updatedAt = at
+            host.store.tickets.save(asked)
+          }
           const report = { state, summary, ...(args.human_action !== undefined ? { question: args.human_action } : {}),
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),
             ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}), ...(needMore ? { need_more: true } : {}),
@@ -176,7 +189,8 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
           const relay = reportRelay(updated, report)
           if (relay) host.sessions.relay(relay.id, relay.text)
           const notification = relay ? 'orchestrator' : 'internal_only'
-          return { reported: true, notification, ...(updated.attention ? { attention: updated.attention } : {}) }
+          return { reported: true, notification, ...(updated.attention ? { attention: updated.attention } : {}),
+            ...(args.tool_request?.length ? { tool_request: 'recorded for the main Session; a request grants nothing' } : {}) }
         })
       },
     }),

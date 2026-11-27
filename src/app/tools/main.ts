@@ -52,6 +52,7 @@ const RouteItemSchema = z.object({
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
+  tools: z.array(z.string().trim().min(1).max(60)).max(8).nullish().describe('accept: the tools or capabilities the ticket declares beyond the worker baseline, such as web-local for a real browser; omit to keep the baseline alone. A declaration names what the work needs, and never grants what the profile does not have.'),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
@@ -64,6 +65,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
+  tools: { check: z.array(z.string().trim().min(1).max(60)).max(8), reads: ['accept'], needs: [] },
   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
 }
 /** Why an item cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
@@ -71,7 +73,8 @@ function invalid(item: RouteItem): string | undefined {
   for (const [field, { check, reads, needs }] of Object.entries(FIELDS) as [Field, typeof FIELDS[Field]][]) {
     const value = item[field]
     if (!reads.includes(item.kind)) continue
-    if (value === undefined || value === null || value.trim() === '') {
+    // A field may be a list (`tools`): empty is missing, and the field's own check judges the entries.
+    if (value === undefined || value === null || (Array.isArray(value) ? value.length === 0 : value.trim() === '')) {
       if (needs.includes(item.kind)) return `${item.kind} needs ${field}`
       continue
     }
@@ -95,7 +98,8 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
     case 'accept': {
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note })
+        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note,
+        ...(item.tools?.length ? { tools: item.tools } : {}) })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {

@@ -14,6 +14,17 @@ const SOURCE = 'local'
 const TASK_SUFFIX = '.task.md'
 const DEFAULT_INTERVAL = 60
 
+/**
+ * The `tools: <capability or tool>, ...` line a task file may carry once: the tools the ticket it starts declares beyond the
+ * worker baseline, by capability name (`web-local`, `browser-skill`) or tool name. An undeclared task file declares none.
+ */
+export const toolsOf = (text: string): string[] | undefined => {
+  const line = text.split('\n').map(item => item.trim()).find(item => item.toLowerCase().startsWith('tools:'))
+  if (!line) return
+  const tools = line.slice(line.indexOf(':') + 1).split(',').map(part => part.trim()).filter(Boolean)
+  return tools.length ? tools : undefined
+}
+
 const LocalConfigSchema = z.object({ root: z.string().default(''),
   pollSeconds: z.number().int().min(60).max(3600).default(60),
   failuresBeforeError: z.number().int().min(1).max(20).default(3) }).strict()
@@ -89,7 +100,8 @@ async function pollRound(ctx: SourceContext, signal: AbortSignal): Promise<void>
     if (ctx.state.get(KV.local.seen(file))?.hash === hash) continue
     // Write the cursor after receive so a crash mid-round re-delivers rather than drops the task (at-least-once).
     await ctx.receive({ id: key('local-task', file, hash), source: SOURCE, threads: [{ source: SOURCE, id: file }],
-      actor: { source: SOURCE, id: 'local' }, human: true, at: started, text, addressed: 'direct', meta: {} })
+      actor: { source: SOURCE, id: 'local' }, human: true, at: started, text, addressed: 'direct', meta: {},
+      ...(toolsOf(text) ? { tools: toolsOf(text)! } : {}) })
     ctx.threads.describe(`${SOURCE}:${file}`, { label: file })
     ctx.state.set(KV.local.seen(file), { hash })
   }
