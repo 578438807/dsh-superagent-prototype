@@ -13,6 +13,9 @@ import { KV } from '../kv.ts'
 /** Prompt sections the team writes; the built-in parts follow dsh-superagent's text until the team overrides them. */
 export const TEAM_SECTIONS = ['communication', 'scope', 'delivery'] as const
 export type TeamSection = typeof TEAM_SECTIONS[number]
+/** The roles that read each team section. Scope and delivery tell a worker how to work and hand over; the orchestrator only
+ * checks the reported outcome, so it carries a two-line summary in its role prompt instead of both full sections. */
+const TEAM_ROLES: Record<TeamSection, readonly Role[]> = { communication: ['orchestrator', 'worker'], scope: ['worker'], delivery: ['worker'] }
 /** Markdown headings for each team section; fixed prompt sections refer to them by these exact names. */
 const TEAM_HEADINGS: Record<TeamSection, string> = { communication: 'Communication', scope: 'Ticket scope', delivery: 'Delivery requirements' }
 export const SKILL_NAME = /^[a-z][a-z0-9-]*$/
@@ -55,7 +58,7 @@ let parts: Readonly<Record<PartKey, BuiltInPart>> | undefined
 export const builtInParts = (): Readonly<Record<PartKey, BuiltInPart>> => parts ??= {
   'runtime/shared': { roles: BOTH, text: sharedPrompt }, 'runtime/orchestrator': { roles: MAIN, text: masterPrompt },
   'runtime/worker': { roles: WORKER, text: workerPrompt },
-  'runtime/subscriptions': { roles: BOTH, text: `## subscriptions\n${guides.subscriptions}` },
+  'runtime/subscriptions': { roles: MAIN, text: `## subscriptions\n${guides.subscriptions}` },
   'runtime/replies': { roles: BOTH, text: `## replies\n${guides.replies}` },
   'runtime/dispatch': { roles: MAIN, text: `## dispatch\n${guides.dispatch}` }, 'runtime/work': { roles: WORKER, text: `## work\n${guides.work}` },
   'runtime/admission': { roles: MAIN, text: mainAdmissionPolicy },
@@ -106,8 +109,9 @@ export function promptParts(config: PromptConfig, role: Role, environment?: stri
     text: config[name] ? `## ${TEAM_HEADINGS[name]}\n${config[name]}` : '' })
   return [
     fixed('runtime/shared'), fixed(`runtime/${role}`),
-    ...TEAM_SECTIONS.map(team),
-    ...['subscriptions', 'replies', role === 'orchestrator' ? 'dispatch' : 'work'].map(name => fixed(`runtime/${name}`)),
+    ...TEAM_SECTIONS.filter(name => TEAM_ROLES[name].includes(role)).map(team),
+    // Thread subscriptions are the orchestrator's routing bookkeeping; a worker only reads the messages they deliver.
+    ...[...role === 'orchestrator' ? ['subscriptions'] : [], 'replies', role === 'orchestrator' ? 'dispatch' : 'work'].map(name => fixed(`runtime/${name}`)),
     ...role === 'orchestrator' ? [fixed('runtime/admission')] : [],
     fixed('runtime/handoff', `runtime/handoff/${role}`),
     ...environment ? [{ name: 'runtime/environment', kind: 'generated' as const, key: 'runtime/environment', text: environment }] : [],
