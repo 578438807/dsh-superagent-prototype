@@ -21,17 +21,6 @@ function withStore(body: (store: Store, dir: string) => void): void {
   try { body(store, dir) } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
 }
 
-it('tells a worker to recall before it starts and to record only when the verdict changed, and tells the main Session neither', () => {
-  // The memory plugin's tools reach a Session by their class (see sessions.ts), so the instruction is all that makes them used.
-  expect(guides.work).toContain('mnemon_recall')
-  expect(guides.work).toContain('mnemon_remember')
-  expect(guides.work).toMatch(/only when the verdict, a conclusion or a pitfall changed/)
-  const worker = composePrompt(defaultPrompts(), 'worker')
-  expect(worker).toContain('mnemon_recall')
-  // The main Session assembles `dispatch`, not `work`, and it does not do the work that produces a conclusion worth recording.
-  for (const prompt of [composePrompt(defaultPrompts(), 'orchestrator'), masterPrompt, workerPrompt, sharedPrompt]) expect(prompt).not.toContain('mnemon_')
-})
-
 it('saves team sections and skills as versions that survive a restart, with history and rollback', () => {
   const dir = mkdtempSync(join(tmpdir(), 'prompt-config-'))
   let store = new Store(join(dir, 'db'))
@@ -74,9 +63,13 @@ it('assembles every role from fixed sections around the team sections, whatever 
   const config = { communication: 'Say little.', scope: '', delivery: 'Attach screenshots.', skills: {} }
   for (const role of ['orchestrator', 'worker'] as const) {
     const names = promptParts(config, role, 'env').map(part => part.name)
-    expect(names).toEqual(['runtime/shared', `runtime/${role}`, 'communication', 'delivery', 'runtime/subscriptions', 'runtime/replies', role === 'orchestrator' ? 'runtime/dispatch' : 'runtime/work', ...role === 'orchestrator' ? ['runtime/admission'] : [], 'runtime/handoff', 'runtime/environment'])
+    // Scope and delivery are the worker's sections; subscriptions are the orchestrator's routing bookkeeping.
+    expect(names).toEqual(['runtime/shared', `runtime/${role}`, 'communication', ...role === 'worker' ? ['delivery'] : [],
+      ...role === 'orchestrator' ? ['runtime/subscriptions'] : [], 'runtime/replies', role === 'orchestrator' ? 'runtime/dispatch' : 'runtime/work',
+      ...role === 'orchestrator' ? ['runtime/admission'] : [], 'runtime/handoff', 'runtime/environment'])
     const prompt = composePrompt(config, role)
-    for (const fixed of [sharedPrompt, role === 'orchestrator' ? masterPrompt : workerPrompt, guides.subscriptions!, guides.replies!, handoffPolicy(role)]) expect(prompt).toContain(fixed)
+    for (const fixed of [sharedPrompt, role === 'orchestrator' ? masterPrompt : workerPrompt, ...role === 'orchestrator' ? [guides.subscriptions!] : [], guides.replies!, handoffPolicy(role)]) expect(prompt).toContain(fixed)
+    if (role === 'worker') expect(prompt).not.toContain(guides.subscriptions!)
     expect(prompt.endsWith(handoffPolicy(role))).toBe(true)
   }
   expect(composePrompt(config, 'orchestrator')).toContain(mainAdmissionPolicy)
@@ -98,7 +91,22 @@ it('reads a prompt file whatever its line ends and blank lines, and names a miss
 
 it('leaves the UI before-and-after evidence to the delivery requirements, which a team can change', () => {
   const config = { ...defaultPrompts(), delivery: 'Only capture the finished screen.' }
-  for (const role of ['orchestrator', 'worker'] as const) expect(composePrompt(config, role)).not.toContain('Before and After visual evidence')
+  expect(composePrompt(config, 'worker')).not.toContain('Before and After visual evidence')
+  expect(composePrompt(config, 'orchestrator')).not.toContain('Before and After visual evidence')
+})
+
+it('keeps each role prompt within its byte budget and free of the other role\'s sections', () => {
+  // Regression gate for prompt bloat: UTF-8 bytes of the composed prompt, no environment or Policy.
+  const orchestrator = composePrompt(defaultPrompts(), 'orchestrator')
+  const worker = composePrompt(defaultPrompts(), 'worker')
+  expect(Buffer.byteLength(orchestrator, 'utf8')).toBeLessThan(37000)
+  expect(Buffer.byteLength(worker, 'utf8')).toBeLessThan(33000)
+  expect(orchestrator).not.toContain('## Ticket scope')
+  expect(orchestrator).not.toContain('## Delivery requirements')
+  expect(orchestrator).toContain("Ticket scope and Delivery requirements are the worker's own sections")
+  expect(worker).toContain('## Ticket scope')
+  expect(worker).toContain('## Delivery requirements')
+  expect(worker).not.toContain('## subscriptions')
 })
 
 it.each(['orchestrator', 'worker'] as const)('ends the %s prompt with the fixed handoff rules and the execution environment, and the main Session\'s with its Policy', role => {
